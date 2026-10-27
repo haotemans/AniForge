@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+test_output/
+lora_dataset/
+*.blend1
+*.blend
+*.blend2
+downloads/
+dist/
+.env
+.env.*
+*.log

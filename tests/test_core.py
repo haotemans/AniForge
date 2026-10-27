@@ -25,6 +25,22 @@ class RecipeTests(unittest.TestCase):
             self.assertEqual([s['index'] for s in group_shots], list(range(1, 10)))
             self.assertEqual(len({s['azimuth'] for s in group_shots}), 9)
 
+    def test_three_views_keep_the_selected_performance(self):
+        shots = core.three_view_recipe('half_body', 'custom pose', 'custom smile')
+        self.assertTrue(all(s['pose'] == 'custom pose' and s['expression'] == 'custom smile' for s in shots))
+
+    def test_library_validation_and_legacy_migration(self):
+        value = core.validate_library({'poses': {}, 'expressions': {}})
+        self.assertEqual(value['cameras'], {})
+        self.assertEqual(core.normalized_name('ウィンク２'), core.normalized_name('ウィンク2'))
+        for invalid in [{'poses': {'broken': {'head': [[1, 2]]}}},
+                        {'expressions': {'bad': {'mesh': {'smile': float('nan')}}}},
+                        {'cameras': {'bad': {'camera_lens': 0}}},
+                        {'cameras': {'bad': {'camera_projection': 'FISHEYE'}}},
+                        {'cameras': {'bad': {'camera_roll': 'invalid'}}}]:
+            with self.assertRaises(ValueError):
+                core.validate_library(invalid)
+
     def test_caption_does_not_invent_pose(self):
         text = core.caption('test_character', 'outfit_detail', 'neutral', '')
         self.assertIn('clothing focus', text)

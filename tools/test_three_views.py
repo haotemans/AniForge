@@ -14,16 +14,29 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--game', required=True)
 parser.add_argument('--output', required=True)
 parser.add_argument('--resolution', type=int, default=1024)
+parser.add_argument('--pose')
+parser.add_argument('--expression')
+parser.add_argument('--projection', choices=('ORTHO', 'PERSP'))
+parser.add_argument('--aspect', choices=('SQUARE', 'PORTRAIT', 'LANDSCAPE'))
+parser.add_argument('--group', choices=('portrait', 'half_body', 'full_body', 'outfit_detail'), default='portrait')
 args = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
 addon.register()
 settings = bpy.context.scene.ml_settings
 settings.armature = next(obj for obj in bpy.context.scene.objects if obj.type == 'ARMATURE')
 settings.resolution = args.resolution
 settings.output = str(Path(args.output) / args.game)
-settings.preview_group = 'portrait'
+settings.preview_group = args.group
+if args.pose:
+    settings.pose = args.pose
+if args.expression:
+    settings.expression = args.expression
+if args.projection:
+    settings.camera_projection = args.projection
+if args.aspect:
+    settings.camera_aspect = args.aspect
 settings.material_profiles = True
 bpy.ops.ml.materials()
-shots = three_view_recipe(settings.preview_group)
+shots = three_view_recipe(settings.preview_group, settings.pose, settings.expression)
 session = addon.RenderSession(bpy.context, shots)
 try:
     session.setup(bpy.context)

@@ -148,7 +148,7 @@ with tempfile.TemporaryDirectory() as folder:
         session.prepare_shot(bpy.context, shot)
         projected = [world_to_camera_view(scene, session.camera, Vector(p)) for p in session.camera_meta['roi']]
         assert all(-.0001 <= p.x <= 1.0001 and -.0001 <= p.y <= 1.0001 and p.z > 0 for p in projected), shot['title']
-        assert (scene.render.resolution_x, scene.render.resolution_y) == (1024, 1024) if shot['group'] == 'portrait' else (768, 1024)
+        assert (scene.render.resolution_x, scene.render.resolution_y) == ((1024, 1024) if shot['group'] == 'portrait' else (768, 1024))
         assert session.camera.data.type == 'PERSP'
     session.close('checked_without_rendering')
     assert before == (settings.camera_lens, settings.camera_projection, settings.camera_aspect, tuple(settings.head_angles), settings.hand_pose)

@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 8, 0),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 8, 1),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 36-shot LoRA dataset rendering',
     'category': 'Render',
@@ -21,7 +21,6 @@ from .material_profiles import material_role, alpha_image, face_light, hair_colo
 from .performance import (aliases, find_bone, shape_blocks, custom_presets, store_presets, enum_presets,
                           expression_apply, pose_apply, capture_expression, capture_pose, restore_seated, SEATED_STATE)
 from .camera import configure_camera, capture_camera, camera_apply, resolution, CAMERA_FIELDS
-from .physics import MMDPhysics, physics_info, import_physics
 
 
 def model_meshes(settings):
@@ -194,17 +193,6 @@ class MLSettings(bpy.types.PropertyGroup):
     slot_left_hand: BoolProperty(name='保留左手势入镜', default=False)
     slot_right_hand: BoolProperty(name='保留右手势入镜', default=False)
     slot_seat: BoolProperty(name='此镜头需要坐凳', default=False)
-    physics_mode: EnumProperty(name='衣服 / 头发物理', items=[('AUTO', '有 MMD 物理时自动稳定', '', 0), ('MMD', '必须运行 MMD 物理', '', 1), ('OFF', '关闭', '', 2)], default='AUTO')
-    physics_source: StringProperty(name='原 PMX / PMD', subtype='FILE_PATH')
-    physics_scale: FloatProperty(name='源模型导入比例', default=.08, min=.0001, max=100)
-    physics_transition: IntProperty(name='摆姿过渡帧', default=20, min=1, max=120)
-    physics_frames: IntProperty(name='物理稳定帧', default=60, min=10, max=240)
-    physics_substeps: IntProperty(name='每帧物理子步', default=10, min=1, max=60)
-    physics_damping: FloatProperty(name='静态照片阻尼', default=.8, min=0, max=.99)
-    physics_joint_mode: EnumProperty(name='物理方式', items=[('PROXY', '衣服 / 头发骨链代理', '重力、距离约束和身体 / 坐凳碰撞，驱动原始骨骼'), ('AUTHORED', '原始 MMD 刚体', '')], default='PROXY')
-    physics_tolerance: FloatProperty(name='稳定阈值（身高比例）', default=.003, min=.0001, max=.03, precision=4)
-    physics_strict: BoolProperty(name='未稳定时停止出图', default=True)
-    physics_seat_collision: BoolProperty(name='衣服与坐凳碰撞', default=False, description='复杂披风可能卡在凳面，开启后须检查收敛和画面')
     developer_tools: BoolProperty(name='显示开发用三视图测试', default=False)
     mapping_report: StringProperty(default='')
     material_profiles: BoolProperty(name='头发 / 脸部优化', default=True)
@@ -214,7 +202,7 @@ class MLSettings(bpy.types.PropertyGroup):
     presets_json: StringProperty(default='')
     running: BoolProperty(default=False, options={'SKIP_SAVE'})
     progress: StringProperty(default='等待开始', options={'SKIP_SAVE'})
-    ui_section: EnumProperty(name='功能', items=[('MATERIAL', '材质', '', 0), ('PERFORMANCE', '姿势', '', 1), ('CAMERA', '镜头', '', 2), ('PHYSICS', '物理', '', 4), ('RENDER', '输出', '', 3)], default='PERFORMANCE')
+    ui_section: EnumProperty(name='功能', items=[('MATERIAL', '材质', '', 0), ('PERFORMANCE', '姿势', '', 1), ('CAMERA', '镜头', '', 2), ('RENDER', '输出', '', 3)], default='PERFORMANCE')
 
 
 class ML_OT_materials(bpy.types.Operator):
@@ -585,20 +573,6 @@ class ML_OT_shot_plan(bpy.types.Operator):
             self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
 
 
-class ML_OT_physics_import(bpy.types.Operator, ImportHelper):
-    bl_idname = 'ml.import_physics'; bl_label = '从原模型补入物理数据'; bl_options = {'REGISTER', 'UNDO'}
-    filter_glob: StringProperty(default='*.pmx;*.pmd', options={'HIDDEN'})
-
-    def execute(self, context):
-        try:
-            settings = context.scene.ml_settings
-            info = import_physics(context, settings, self.filepath or settings.physics_source)
-            self.report({'INFO'}, f'已补入 {info["bodies"]} 个刚体 / {info["joints"]} 个关节；当前网格和材质继续保留。')
-            return {'FINISHED'}
-        except Exception as exc:
-            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
-
-
 class ML_OT_frame_camera(bpy.types.Operator):
     bl_idname = 'ml.frame_camera'; bl_label = '应用姿势表情并生成预览相机'; bl_options = {'REGISTER', 'UNDO'}
 
@@ -650,7 +624,13 @@ class RenderSession:
                       r.use_file_extension, r.use_border, r.use_compositing, r.use_sequencer, r.pixel_aspect_x, r.pixel_aspect_y)
         self.visibility = [(o, o.hide_render) for o in self.scene.objects if o.type in {'MESH', 'LIGHT'} and o not in self.meshes]
         self.supports = []
-        self.physics = MMDPhysics(context, self.settings)
+        self.dynamics_constraints = [c for b in self.settings.armature.pose.bones for c in b.constraints
+                                     if c.name.startswith('mmd_tools_rigid_track') or
+                                     getattr(getattr(c, 'target', None), 'mmd_type', '') in {'RIGID_BODY', 'TRACK_TARGET'}]
+        self.rigidbody_world = self.scene.rigidbody_world
+        self.rigidbody_enabled = self.rigidbody_world.enabled if self.rigidbody_world else None
+        self.simulation_modifiers = [(m, m.show_viewport, m.show_render) for obj in self.meshes for m in obj.modifiers
+                                     if m.type in {'CLOTH', 'SOFT_BODY'}]
 
     def create_object(self, name, kind):
         data = bpy.data.cameras.new(name) if kind == 'CAMERA' else bpy.data.lights.new(name, 'AREA')
@@ -667,11 +647,17 @@ class RenderSession:
         self.manifest = {'status': 'running', 'style': self.settings.style, 'blender': bpy.app.version_string,
                          'warning': 'Game styles are approximations. Review poses, crops and captions before training.',
                          'shots': [], 'recipe': self.plan, 'planned_coverage': dataset_coverage(self.plan),
-                         'physics_settings': {name: getattr(self.settings, name) for name in ('physics_mode', 'physics_transition', 'physics_frames', 'physics_substeps', 'physics_damping', 'physics_joint_mode', 'physics_seat_collision', 'physics_tolerance', 'physics_strict')},
+                         'deformation_mode': 'ARMATURE_STATIC',
                          'camera_settings': capture_camera(self.settings),
                          'performance': {'pose_strength': self.settings.pose_strength, 'expression_strength': self.settings.expression_strength,
                                          'hand_pose': self.settings.hand_pose, 'head_angles': list(self.settings.head_angles)}}
         self.flush()
+        if self.rigidbody_world:
+            self.rigidbody_world.enabled = False
+        for constraint in self.dynamics_constraints:
+            constraint.mute = True
+        for modifier, _, _ in self.simulation_modifiers:
+            modifier.show_viewport = modifier.show_render = False
         for obj, _ in self.visibility:
             obj.hide_render = True
         self.camera = self.create_object('LoRA Camera', 'CAMERA'); self.camera.data.type = 'ORTHO'
@@ -697,12 +683,15 @@ class RenderSession:
     def flush(self):
         write_json(self.folder / 'manifest.json', self.manifest)
 
-    def reset_character(self):
+    def reset_character(self, static=True):
         restore_seated(self.settings.armature)
         for bone, mode, matrix in self.pose:
             bone.rotation_mode = mode; bone.matrix_basis = matrix
         for constraint, muted in self.constraint_mutes:
             constraint.mute = muted
+        if static:
+            for constraint in self.dynamics_constraints:
+                constraint.mute = True
         if self.seated_state:
             self.settings.armature[SEATED_STATE] = self.seated_state
         for key, value in self.shapes:
@@ -737,8 +726,6 @@ class RenderSession:
         h = hi.z-lo.z
         ankles = [b for key in ('left_ankle', 'right_ankle') if (b := find_bone(self.settings.armature, key, self.settings))]
         ground = min((self.settings.armature.matrix_world @ b.tail).z for b in ankles) if ankles else lo.z
-        if self.physics.model:
-            self.support_box(context, 'AniForge Physics Ground', Vector((0, 0, ground-h*.02)), (h*5, h*5, h*.04), False)
         if shot.get('support') == 'seat' or shot['pose'] in {'sit_chair', 'sit_side'}:
             hips = find_bone(self.settings.armature, 'lower_body', self.settings)
             if not hips:
@@ -759,7 +746,6 @@ class RenderSession:
                     self.support_box(context, 'AniForge Seat Leg', p, (h*.025, h*.025, leg_height))
 
     def prepare_shot(self, context, shot):
-        self.physics.clear()
         self.reset_character()
         effective = ShotSettings(self.settings, shot)
         expression_keys = expression_apply(effective, self.meshes, shot['expression'])
@@ -767,9 +753,8 @@ class RenderSession:
         context.view_layer.update()
         self.prepare_supports(context, shot)
         context.view_layer.update()
-        self.physics_meta = self.physics.settle(context, [o for o, _ in self.supports], self.meshes)
         group = shot['group']
-        self.camera_meta = configure_camera(context, self.settings, self.physics.meshes or self.meshes, self.camera, shot)
+        self.camera_meta = configure_camera(context, self.settings, self.meshes, self.camera, shot)
         folder = self.folder / group; folder.mkdir(exist_ok=True)
         name = f'{safe_name(self.settings.trigger)}_{group}_{shot["index"]:02d}'
         image = folder / (name + '.png'); self.scene.render.filepath = str(image)
@@ -797,13 +782,16 @@ class RenderSession:
         image.with_suffix('.txt').write_text(tags + '\n', encoding='utf-8')
         self.manifest['shots'].append(dict(shot, image=str(image.relative_to(self.folder)), caption=tags,
                                            mapped_shape_keys=expression_keys, mapped_bones=pose_bones,
-                                           pose_requires_review=True, mapped_posture=posture, camera=self.camera_meta, physics=self.physics_meta))
+                                           pose_requires_review=True, mapped_posture=posture, camera=self.camera_meta, deformation_mode='ARMATURE_STATIC'))
         self.flush()
 
     def close(self, status, error=''):
         try:
-            self.physics.close()
-            self.reset_character()
+            self.reset_character(static=False)
+            if self.rigidbody_world:
+                self.rigidbody_world.enabled = self.rigidbody_enabled
+            for modifier, viewport, render in self.simulation_modifiers:
+                modifier.show_viewport = viewport; modifier.show_render = render
             r = self.scene.render
             (self.scene.camera, r.engine, r.filepath, r.resolution_x, r.resolution_y,
              r.resolution_percentage, r.image_settings.file_format, r.image_settings.color_mode,
@@ -965,19 +953,6 @@ class ML_PT_panel(bpy.types.Panel):
             for name in ('camera_aspect', 'front', 'margin', 'camera_azimuth', 'camera_elevation', 'camera_roll', 'camera_zoom', 'camera_shift_x', 'camera_shift_y', 'camera_target_offset'):
                 col.prop(settings, name)
             col.operator('ml.frame_camera')
-        elif section == 'PHYSICS':
-            col.prop(settings, 'physics_mode')
-            info = physics_info(settings.armature)
-            col.label(text=f'刚体 {info["bodies"]} · 动态 {info["dynamic"]} · 关节 {info["joints"]}')
-            col.prop(settings, 'physics_source'); col.prop(settings, 'physics_scale')
-            op = col.operator('ml.import_physics'); op.filepath = settings.physics_source
-            col.prop(settings, 'physics_joint_mode')
-            for name in ('physics_transition', 'physics_frames', 'physics_damping', 'physics_seat_collision', 'physics_strict', 'physics_tolerance'):
-                col.prop(settings, name)
-            if settings.physics_joint_mode == 'AUTHORED':
-                col.prop(settings, 'physics_substeps')
-            col.label(text='每张：缓慢摆姿 → 物理稳定 → 构图出图')
-            col.label(text='无出图镜头预览仅检查姿势 / 构图')
         else:
             col.prop(settings, 'trigger'); col.prop(settings, 'tags')
             col.prop(settings, 'resolution'); col.prop(settings, 'output')
@@ -994,7 +969,7 @@ class ML_PT_panel(bpy.types.Panel):
             box.operator('ml.assign_shot_pose')
             box.operator('ml.assign_shot_pose', text='恢复此镜头默认姿势').reset = True
             box.operator('ml.shot_plan')
-            box.operator('ml.preview', text='渲染此镜头 1 张（含物理）').use_plan_shot = True
+            box.operator('ml.preview', text='渲染此镜头 1 张').use_plan_shot = True
             box.operator('ml.shot_plan', text='查看 36 张拍摄清单').report_only = True
             col.operator('ml.render_dataset', text='生成角色数据集：共 36 张 + 标签', icon='RENDER_STILL').test_only = False
             col.prop(settings, 'developer_tools')
@@ -1006,19 +981,31 @@ class ML_PT_panel(bpy.types.Panel):
 
 
 CLASSES = (MLSettings, ML_OT_materials, ML_OT_textures, ML_OT_assign_textures, ML_OT_preset,
-           ML_OT_export_presets, ML_OT_import_presets, ML_OT_vpd, ML_OT_mapping, ML_OT_frame_camera, ML_OT_shot_plan, ML_OT_physics_import,
+           ML_OT_export_presets, ML_OT_import_presets, ML_OT_vpd, ML_OT_mapping, ML_OT_frame_camera, ML_OT_shot_plan,
            ML_OT_pose_folder, ML_OT_assign_shot, ML_OT_render, ML_OT_preview, ML_PT_panel)
+
+
+@bpy.app.handlers.persistent
+def migrate_settings(_=None):
+    for scene in bpy.data.scenes:
+        if scene.ml_settings.get('ui_section') == 4:
+            scene.ml_settings.ui_section = 'PERFORMANCE'
 
 
 def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.Scene.ml_settings = PointerProperty(type=MLSettings)
+    if migrate_settings not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(migrate_settings)
+    migrate_settings()
 
 
 def unregister():
     if any(scene.ml_settings.running for scene in bpy.data.scenes):
         raise RuntimeError('请先结束批量渲染再禁用插件。')
+    if migrate_settings in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(migrate_settings)
     del bpy.types.Scene.ml_settings
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

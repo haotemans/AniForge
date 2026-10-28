@@ -67,7 +67,7 @@ def read_vpd(settings, meshes, filepath, name=None, scale=.08, humanoid_only=Fal
     """Validate all records before editing, then save one static local preset."""
     import bpy
     from mathutils import Matrix, Vector
-    from .physics import mmd_api
+    from .mmd_compat import mmd_api
     from .performance import aliases, find_bone, restore_seated, remember_pose_state, capture_pose, custom_presets, store_presets, shape_blocks, expression_apply
     rig = settings.armature
     if rig.animation_data and rig.animation_data.action:

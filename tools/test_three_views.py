@@ -7,7 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import bpy
-import mmd_lora_studio as addon
+from tools.blender_source import load_addon
+addon = load_addon()
 from mmd_lora_studio.core import three_view_recipe, write_json
 
 parser = argparse.ArgumentParser()

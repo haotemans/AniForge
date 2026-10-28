@@ -10,7 +10,8 @@ sys.path.insert(0, str(ROOT))
 import bpy
 from mathutils import Matrix, Vector
 from bpy_extras.object_utils import world_to_camera_view
-import mmd_lora_studio as addon
+from tools.blender_source import load_addon
+addon = load_addon()
 from mmd_lora_studio.core import POSE_LABELS, EXPRESSION_LABELS, ShotSettings, recipe, write_json
 from mmd_lora_studio.camera import configure_camera
 

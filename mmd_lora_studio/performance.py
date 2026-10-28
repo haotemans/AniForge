@@ -201,8 +201,12 @@ def restore_seated(rig):
 def remember_pose_state(rig, bones):
     """Extend the temporary pose baseline so switching presets restores IK/FK."""
     state = json.loads(rig.get(SEATED_STATE, '{}'))
-    state.setdefault('bones', {}).update({b.name: [list(row) for row in b.matrix_basis] for b in bones})
-    state.setdefault('modes', {}).update({b.name: b.rotation_mode for b in bones})
+    for bone in bones:
+        state.setdefault('bones', {}).setdefault(bone.name, [list(row) for row in bone.matrix_basis])
+        state.setdefault('modes', {}).setdefault(bone.name, bone.rotation_mode)
+        constraints = state.setdefault('constraints', {}).setdefault(bone.name, {})
+        for constraint in bone.constraints:
+            constraints.setdefault(constraint.name, constraint.mute)
     rig[SEATED_STATE] = json.dumps(state)
 
 
@@ -269,6 +273,16 @@ def pose_apply(settings, name):
                                                        for key in ('left_leg', 'right_leg')):
             begin_leg_fk(settings)
         remember_pose_state(rig, [rig.pose.bones[n] for n in custom if n in rig.pose.bones])
+        if any(asset['pose'] == name for asset in library['shot_assets'].values()):
+            # The native retarget was evaluated on an isolated FK skeleton.
+            # Existing MMD IK/additional-transform constraints must not apply
+            # a second time to the captured static pose. State is restored by
+            # the same managed-pose transaction when switching/end rendering.
+            for bone_name in custom:
+                bone = rig.pose.bones.get(bone_name)
+                if bone:
+                    for constraint in bone.constraints:
+                        constraint.mute = True
         for bone_name, values in custom.items():
             bone = rig.pose.bones.get(bone_name)
             if bone:

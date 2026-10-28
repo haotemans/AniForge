@@ -20,7 +20,7 @@ parser.add_argument('--expression')
 parser.add_argument('--projection', choices=('ORTHO', 'PERSP'))
 parser.add_argument('--aspect', choices=('SQUARE', 'PORTRAIT', 'LANDSCAPE'))
 parser.add_argument('--group', choices=('portrait', 'half_body', 'full_body', 'outfit_detail'), default='portrait')
-parser.add_argument('--plan-index', type=int, choices=range(1, 10), help='Use one linked 36-shot plan entry; still render only front/side/back')
+parser.add_argument('--plan-index', type=int, choices=range(1, 13), help='Use one linked 42-shot plan entry; still render only front/side/back')
 args = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
 addon.register()
 settings = bpy.context.scene.ml_settings
@@ -40,7 +40,7 @@ settings.material_profiles = True
 bpy.ops.ml.materials()
 shots = three_view_recipe(settings.preview_group, settings.pose, settings.expression)
 if args.plan_index:
-    base = next(s for s in addon.recipe() if s['group'] == args.group and s['index'] == args.plan_index)
+    base = next(s for s in addon.dataset_plan(settings) if s['group'] == args.group and s['index'] == args.plan_index)
     shots = [dict(base, index=i+1, azimuth=angle, view=view) for i, (angle, view) in enumerate(((0, 'front'), (90, 'side'), (180, 'back')))]
 session = addon.RenderSession(bpy.context, shots)
 try:
@@ -61,5 +61,8 @@ report = {'status': 'complete', 'game': args.game, 'render_folder': str(session.
                          'shader_to_rgb_nodes': sum(n.type == 'SHADERTORGB' for n in mat.node_tree.nodes)}
                         for mat in materials]}
 write_json(Path(args.output) / args.game / 'three_views.json', report)
-bpy.ops.wm.save_as_mainfile(filepath=str(Path(args.output) / args.game / 'optimized.blend'))
+destination = (Path(args.output) / args.game / 'optimized.blend').resolve()
+if bpy.data.filepath and destination == Path(bpy.data.filepath).resolve():
+    destination = destination.with_name('three_views_copy.blend')
+bpy.ops.wm.save_as_mainfile(filepath=str(destination), copy=True)
 print('THREE_VIEWS_OK', args.game, session.folder)

@@ -52,13 +52,14 @@ assert 'PHYSICS' not in settings.bl_rna.properties['ui_section'].enum_items.keys
 
 with tempfile.TemporaryDirectory() as folder:
     settings.output = folder
+    fixture_plan = [dict(s, pose_provider='TEST_FIXTURE') for s in addon.recipe()]
     with patch('subprocess.run', side_effect=AssertionError('Physics subprocess started')), \
          patch('subprocess.Popen', side_effect=AssertionError('Physics worker started')):
-        session = addon.RenderSession(bpy.context, addon.dataset_plan(settings)); session.setup(bpy.context)
+        session = addon.RenderSession(bpy.context, fixture_plan); session.setup(bpy.context)
         assert session.manifest['deformation_mode'] == 'ARMATURE_STATIC'
         assert not world.enabled and track.mute
         assert all(not m.show_viewport and not m.show_render for m, _, _ in modifier_flags)
-        for shot in addon.dataset_plan(settings):
+        for shot in fixture_plan:
             session.prepare_shot(bpy.context, shot)
             assert not world.enabled and track.mute
             assert scene.frame_current == frame
@@ -69,7 +70,7 @@ with tempfile.TemporaryDirectory() as folder:
         session = addon.RenderSession(bpy.context); session.setup(bpy.context)
         try:
             with patch.object(addon, 'configure_camera', side_effect=ValueError('Forced framing error')):
-                session.prepare_shot(bpy.context, addon.recipe()[0])
+                session.prepare_shot(bpy.context, fixture_plan[0])
         except ValueError:
             session.close('failed', 'Forced framing error')
         else:
@@ -81,5 +82,5 @@ with tempfile.TemporaryDirectory() as folder:
     for manifest in Path(folder).rglob('manifest.json'):
         assert 'physics_settings' not in json.loads(manifest.read_text())
 assert scene.frame_current == frame
-print('STATIC_RENDER_OK: 39 shots, legacy settings ignored, no workers/images, dynamics restored after success/error')
+print('STATIC_RENDER_OK: 42 shots, legacy settings ignored, no workers/images, dynamics restored after success/error')
 addon.unregister()

@@ -119,15 +119,18 @@ with tempfile.TemporaryDirectory() as folder:
         assert bpy.ops.ml.render_dataset() == {'FINISHED'}
     assert len(dispatched) == 3 and all(s['pose'] == '我的站姿' and s['expression'] == '轻微微笑' for s in dispatched)
     dispatched.clear()
+    settings.dataset_variation = 'CURRENT'
     with patch.object(addon.RenderSession, 'render', lambda self, context, shot: dispatched.append(shot.copy())):
         assert bpy.ops.ml.render_dataset(test_only=False) == {'FINISHED'}
-    assert len(dispatched) == 39 and dispatched == addon.recipe()
+    assert len(dispatched) == 42 and dispatched == addon.current_recipe(settings)
+    settings.dataset_variation = 'CYCLE'
     dispatched.clear()
     settings.preview_group = 'portrait'; settings.plan_index = 5
+    assert bpy.ops.ml.assign_shot_pose() == {'FINISHED'}
     with patch.object(addon.RenderSession, 'render', lambda self, context, shot: dispatched.append(shot.copy())):
         assert bpy.ops.ml.render_dataset(use_plan_shot=True) == {'FINISHED'}
     assert [s['azimuth'] for s in dispatched] == [0, 90, 180]
-    assert all(s['pose'] == 'peace_face' and s['expression'] == 'wink' for s in dispatched)
+    assert all(s['pose'] == '我的站姿' and s['expression'] == '轻微微笑' for s in dispatched)
 
 camera = bpy.data.objects.new('Fit Camera', bpy.data.cameras.new('Fit Camera')); scene.collection.objects.link(camera)
 scene.render.resolution_percentage = 100
@@ -146,8 +149,11 @@ for projection in ('ORTHO', 'PERSP'):
 with tempfile.TemporaryDirectory() as folder:
     settings.output = folder
     before = (settings.camera_lens, settings.camera_projection, settings.camera_aspect, tuple(settings.head_angles), settings.hand_pose)
-    session = addon.RenderSession(bpy.context, addon.recipe()); session.setup(bpy.context)
-    for shot in addon.recipe():
+    # Legacy templates retain independent coverage; they are explicit test
+    # fixtures and cannot silently stand in for missing AnimChar captures.
+    fixture_plan = [dict(s, pose_provider='TEST_FIXTURE') for s in addon.recipe()]
+    session = addon.RenderSession(bpy.context, fixture_plan); session.setup(bpy.context)
+    for shot in fixture_plan:
         session.prepare_shot(bpy.context, shot)
         projected = [world_to_camera_view(scene, session.camera, Vector(p)) for p in session.camera_meta['roi']]
         assert all(-.0001 <= p.x <= 1.0001 and -.0001 <= p.y <= 1.0001 and p.z > 0 for p in projected), shot['title']
@@ -157,7 +163,7 @@ with tempfile.TemporaryDirectory() as folder:
     assert before == (settings.camera_lens, settings.camera_projection, settings.camera_aspect, tuple(settings.head_angles), settings.hand_pose)
     assert not list(Path(folder).rglob('*.png'))
 assert bpy.ops.ml.shot_plan(report_only=True) == {'FINISHED'}
-assert len(json.loads(bpy.data.texts['AniForge 39 Shot Plan'].as_string())['shots']) == 39
+assert len(json.loads(bpy.data.texts['AniForge 42 Shot Plan'].as_string())['shots']) == 42
 assert bpy.ops.ml.shot_plan() == {'FINISHED'}
 before_cameras = len(bpy.data.cameras)
 settings.camera_aspect = 'LANDSCAPE'; settings.camera_shift_y = .4
@@ -213,7 +219,7 @@ settings.slot_left_hand = settings.slot_right_hand = True
 assert bpy.ops.ml.assign_shot_pose() == {'FINISHED'}
 shot = addon.dataset_plan(settings)[4]
 assert shot['pose'] == 'native IK pose' and shot['performance']['hand_pose'] == 'KEEP'
-assert len(addon.dataset_plan(settings)) == 39
+assert len(addon.dataset_plan(settings)) == 42
 settings.dataset_variation = 'CURRENT'
 assert all(s['pose'] == settings.pose and 'pose_overridden' not in s for s in addon.dataset_plan(settings))
 settings.dataset_variation = 'CYCLE'
@@ -238,14 +244,15 @@ settings.preview_group = 'portrait'; settings.plan_index = 12
 assert settings.plan_index == 12
 for group in ('half_body', 'full_body', 'outfit_detail'):
     settings.preview_group = group
-    assert settings.plan_index == 9
+    count = 12 if group == 'half_body' else 9
+    assert settings.plan_index == count
     settings.plan_index = 12
-    assert settings.plan_index == 9
+    assert settings.plan_index == count
     settings['plan_index'] = 12
     addon.migrate_settings()
-    assert settings.plan_index == 9
+    assert settings.plan_index == count
     settings.preview_group = 'portrait'; settings.plan_index = 12
-print('ANIFORGE_PERFORMANCE_CAMERA_OK: native IK / preset switching, slot overrides, 17 deterministic poses, 72 camera fits + 39 linked shots; no renders')
+print('ANIFORGE_PERFORMANCE_CAMERA_OK: native IK / preset switching, slot overrides, 17 deterministic poses, 72 camera fits + 42 linked shots; no renders')
 from mmd_lora_studio.hand_pose import hand_frame, hand_shape_metrics
 from mmd_lora_studio.performance import finger_bones, bone_side
 # Articulated thumbs and a genuinely skinned fingertip prevent a regression
@@ -277,7 +284,7 @@ settings.hand_pose = 'AUTO'
 mirror_positions = {}
 for mirror in ('LEFT', 'RIGHT'):
     settings.hip_hand = mirror
-    shot = next(s for s in addon.dataset_plan(settings) if s['group'] == 'half_body' and s['index'] == 5)
+    shot = next(s for s in addon.dataset_plan(settings) if s['group'] == 'full_body' and s['index'] == 3)
     assert shot['azimuth'] == (30 if mirror == 'LEFT' else -30)
     effective = addon.ShotSettings(settings, shot)
     addon.pose_apply(effective, 'hand_hip')

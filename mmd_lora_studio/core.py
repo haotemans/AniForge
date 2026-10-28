@@ -3,6 +3,7 @@ import json
 import re
 import math
 import unicodedata
+import copy
 from pathlib import Path
 
 STYLES = {
@@ -128,7 +129,7 @@ POSE_HANDS = {'peace_face': {'right': 'PEACE', 'left': 'RELAXED'},
               'salute': {'right': 'OPEN', 'left': 'RELAXED'}}
 
 EXPRESSION_LABELS = {'neutral': '中性', 'smile': '微笑', 'happy': '开心', 'blink': '闭眼',
-                     'wink': '眨单眼', 'angry': '生气', 'sad': '悲伤', 'surprised': '惊讶'}
+                     'wink': '眨单眼', 'angry': '生气', 'sad': '悲伤', 'surprised': '惊讶', 'happy_open': '开心笑脸（睁眼）'}
 POSE_LABELS = {'relaxed': '自然站姿', 'hand_hip': '单手叉腰', 'wave': '招手', 'open_arms': '张开双臂',
               'hands_front': '双手身前', 'presenting': '单手展示', 'peace_face': '脸侧剪刀手',
               'thinking': '托腮思考', 'shy': '害羞收手', 'cheer': '元气举手', 'cat_paws': '猫爪手势',
@@ -136,6 +137,7 @@ POSE_LABELS = {'relaxed': '自然站姿', 'hand_hip': '单手叉腰', 'wave': '�
               'sit_chair': '端坐', 'sit_side': '侧坐'}
 EXPRESSION_CHANNELS = {
     'smile': [(MORPHS['smile'][0], .7)],
+    'happy_open': [(MORPHS['smile'][0], .8), (('あ', 'あ2', 'Mouth_A01', 'jawOpen_a'), .15)],
     'happy': [(('口角上げ', 'にやり', 'smile', 'jawOpen_Happy_01_CLO'), .8),
               (('笑い', 'EL_Happy_l_CLO', 'eyeSmile'), .55), (('あ', 'あ2', 'Mouth_A01', 'jawOpen_a'), .18)],
     'blink': [(MORPHS['blink'][0], 1)], 'wink': [(MORPHS['wink'][0], 1)],
@@ -150,19 +152,19 @@ def normalized_name(name):
 
 
 def empty_library():
-    return {'schema_version': 2, 'expressions': {}, 'poses': {}, 'cameras': {}, 'bone_map': {}, 'pose_options': {}, 'shot_overrides': {}}
+    return {'schema_version': 3, 'expressions': {}, 'poses': {}, 'cameras': {}, 'bone_map': {}, 'pose_options': {}, 'shot_overrides': {}, 'shot_assets': {}, 'legacy_shot_overrides': {}}
 
 
 def validate_library(value):
-    if not isinstance(value, dict) or value.get('schema_version', 1) not in (1, 2):
+    if not isinstance(value, dict) or value.get('schema_version', 1) not in (1, 2, 3):
         raise ValueError('不支持的预设文件版本。')
     version = value.get('schema_version', 1)
     result = empty_library()
-    for category in ('expressions', 'poses', 'cameras', 'bone_map', 'pose_options', 'shot_overrides'):
+    for category in ('expressions', 'poses', 'cameras', 'bone_map', 'pose_options', 'shot_overrides', 'shot_assets', 'legacy_shot_overrides'):
         data = value.get(category, {})
         if not isinstance(data, dict):
             raise ValueError('预设分类格式错误：' + category)
-        result[category] = data
+        result[category] = copy.deepcopy(data)
     if version == 1:
         # Existing .blend and JSON portrait overrides referred to the old
         # 9-shot layout. Keep their intent away from the new neutral four views.
@@ -176,6 +178,14 @@ def validate_library(value):
                 slot = f"portrait:{portrait_slots[int(suffix)]}"
             migrated[slot] = override
         result['shot_overrides'] = migrated
+    if version < 3:
+        # Old half-body slots described different photos. Keep them available
+        # for reassignment without placing old gestures in the neutral views.
+        for slot in list(result['shot_overrides']):
+            if slot.startswith('half_body:'):
+                if not re.fullmatch(r'half_body:[1-9]', slot):
+                    raise ValueError('旧版半身镜头位置必须为1–9。')
+                result['legacy_shot_overrides'][slot] = result['shot_overrides'].pop(slot)
     def numbers(item):
         if isinstance(item, dict):
             if not all(isinstance(k, str) and len(k) <= 256 for k in item):
@@ -228,11 +238,11 @@ def validate_library(value):
             raise ValueError('姿势选项必须引用已有姿势并指定腿部控制。')
         if not isinstance(options['leg_mode'], str) or options['leg_mode'] not in {'KEEP', 'FK'}:
             raise ValueError('腿部控制必须保留模型 IK 或使用 FK。')
-    for slot, override in result['shot_overrides'].items():
+    for slot, override in list(result['shot_overrides'].items())+list(result['legacy_shot_overrides'].items()):
         if not isinstance(slot, str) or not any(
-                re.fullmatch(re.escape(group) + (r':(?:[1-9]|1[0-2])' if group == 'portrait' else r':[1-9]'), slot)
+                re.fullmatch(re.escape(group) + (r':(?:[1-9]|1[0-2])' if group in {'portrait', 'half_body'} else r':[1-9]'), slot)
                 for group in GROUPS):
-            raise ValueError('镜头位置必须为肖像 1–12 或其他分组 1–9。')
+            raise ValueError('镜头位置必须为肖像/半身 1–12，或全身/服装 1–9。')
         if not isinstance(override, dict) or set(override)-{'pose', 'expression', 'include_hands', 'title', 'support', 'azimuth'}:
             raise ValueError('镜头替换包含不支持的参数。')
         if not isinstance(override.get('pose'), str) or override['pose'] not in set(POSE_LABELS) | set(result['poses']):
@@ -248,6 +258,19 @@ def validate_library(value):
             raise ValueError('镜头支撑物无效。')
         if 'azimuth' in override and (not isinstance(override['azimuth'], (int, float)) or not -180 <= override['azimuth'] <= 180):
             raise ValueError('镜头水平角须为 -180 到 180 度。')
+    for key, asset in result['shot_assets'].items():
+        if not isinstance(asset, dict) or not {'pose', 'rig', 'slot', 'provider', 'reference', 'reviewed'} <= set(asset) or set(asset)-{'pose', 'rig', 'slot', 'provider', 'reference', 'reviewed', 'review_note'}:
+            raise ValueError('AnimChar 镜头记录格式错误。')
+        if not all(isinstance(asset[k], str) for k in ('pose', 'rig', 'slot', 'reference')) or not isinstance(asset['reviewed'], bool):
+            raise ValueError('AnimChar 镜头来源或验收状态错误。')
+        if asset['provider'] != 'AnimCharTools' or asset['pose'] not in result['poses']:
+            raise ValueError('镜头动作必须引用已保存的 AnimChar 姿势。')
+        if not re.fullmatch(r'[0-9a-f]{24}', asset['rig']) or key != asset['rig']+'|'+asset['slot']:
+            raise ValueError('AnimChar 镜头的模型签名不匹配。')
+        if asset['slot'] != 'neutral' and not re.fullmatch(r'(?:portrait|half_body):(?:[5-9]|1[0-2])', asset['slot']):
+            raise ValueError('AnimChar 镜头位置无效。')
+        if not isinstance(asset.get('review_note', ''), str) or len(asset.get('review_note', '')) > 256:
+            raise ValueError('镜头验收说明无效。')
     return result
 
 
@@ -258,6 +281,12 @@ def safe_name(value):
 
 # Each row is a designed photo, not a Cartesian product of presets.
 # title, pose, expression, azimuth, elevation, head pitch/yaw/roll, focus, hands.
+HALFBODY_ACTIONS = {
+    5: ('hand_on_hip', '单手叉腰'), 6: ('peace_toward_camera', '向镜头比耶'),
+    7: ('hands_overlapped_at_waist', '腰前轻交叠'), 8: ('palm_up_invitation', '掌心向上邀请'),
+    9: ('hand_near_ear', '轻触耳侧'), 10: ('over_shoulder_one_hand_raised', '侧后回眸、单手轻抬'),
+    11: ('back_view_one_arm_raised', '背向单臂斜上举'), 12: ('back_view_gentle_a_pose', '正后双臂轻展'),
+}
 SHOT_PLANS = {
     'portrait': (
         # Four neutral head references: move the camera, never the head.
@@ -276,15 +305,18 @@ SHOT_PLANS = {
         ('温柔回眸', 'hands_behind', 'smile', -40, 0, (0, -15, 4), 'HEAD', ()),
     ),
     'half_body': (
-        ('自然半身', 'relaxed', 'neutral', 0, 0, (0, 0, 0), 'UPPER', ()),
-        ('俏皮招手', 'wave', 'smile', -18, 2, (0, -5, 4), 'UPPER', ('right_wrist',)),
-        ('叉腰自信', 'hand_hip', 'smile', 25, 0, (0, 8, -4), 'UPPER', ('left_wrist',)),
-        ('剪刀手半身', 'peace_face', 'wink', 15, 3, (0, 4, -8), 'UPPER', ('right_wrist',)),
+        ('标准正面半身', 'relaxed', 'neutral', 0, 0, (0, 0, 0), 'UPPER', ()),
+        ('标准左侧半身', 'relaxed', 'neutral', 90, 0, (0, 0, 0), 'UPPER', ()),
+        ('标准右侧半身', 'relaxed', 'neutral', -90, 0, (0, 0, 0), 'UPPER', ()),
+        ('标准背面半身', 'relaxed', 'neutral', 180, 0, (0, 0, 0), 'UPPER', ()),
         ('单手叉腰·自信浅笑', 'hand_hip', 'smile', 30, 0, (0, 12, 0), 'UPPER', ('left_wrist', 'right_wrist')),
-        ('猫爪卖萌', 'cat_paws', 'happy', 8, 4, (2, 2, -7), 'UPPER', ('left_wrist', 'right_wrist')),
-        ('俏皮敬礼', 'salute', 'smile', -25, 0, (-2, -8, 3), 'UPPER', ('right_wrist',)),
-        ('单手介绍', 'presenting', 'neutral', 32, 0, (0, 10, 0), 'UPPER', ('right_wrist',)),
-        ('侧坐半身', 'sit_side', 'smile', -32, 4, (2, -10, 5), 'UPPER', ()),
+        ('向镜头比耶·开心笑脸', 'peace_face', 'happy_open', 15, 0, (0, 5, 5), 'UPPER', ('left_wrist', 'right_wrist')),
+        ('腰前轻交叠·温柔浅笑', 'hands_front', 'smile', 0, 0, (0, 0, 3), 'UPPER', ('left_wrist', 'right_wrist')),
+        ('掌心向上邀请·友好微笑', 'presenting', 'smile', 45, 0, (0, 15, 0), 'UPPER', ('left_wrist', 'right_wrist')),
+        ('轻触耳侧·甜美微笑', 'elegant', 'smile', 55, 0, (0, 18, 3), 'UPPER', ('left_wrist', 'right_wrist')),
+        ('侧后回眸·单手轻抬', 'elegant', 'smile', 135, 0, (0, 35, 0), 'UPPER', ('left_wrist', 'right_wrist')),
+        ('背向单臂斜上举', 'cheer', 'neutral', 160, 0, (0, 0, 0), 'UPPER', ('left_wrist', 'right_wrist')),
+        ('正后双臂轻展', 'open_arms', 'neutral', 180, 0, (0, 0, 0), 'UPPER', ('left_wrist', 'right_wrist')),
     ),
     'full_body': (
         ('正面立绘', 'relaxed', 'neutral', 0, 0, (0, 0, 0), 'FULL', ()),
@@ -327,18 +359,31 @@ def recipe():
                                       'camera_azimuth': 0, 'camera_elevation': 0,
                                       'camera_roll': 0, 'camera_zoom': 1, 'camera_shift_x': 0, 'camera_shift_y': 0,
                                       'camera_target_offset': [0, 0, 0], 'margin': 1.12}))
-            if group == 'half_body' and index == 5:
+            if group in {'portrait', 'half_body'}:
+                shots[-1]['semantic_pose'] = pose
+                shots[-1]['action_label'] = POSE_LABELS[pose]
+                if group == 'half_body' and index in HALFBODY_ACTIONS:
+                    shots[-1]['semantic_pose'], shots[-1]['action_label'] = HALFBODY_ACTIONS[index]
+                shots[-1]['pose_provider'] = 'AnimCharTools'
+                shots[-1]['asset_slot'] = 'neutral' if index <= 4 else f'{group}:{index}'
+                shots[-1]['reference_document'] = ('docs/shot_plan.md' if group == 'portrait' or index <= 4 else f'docs/halfbody_pose_{index:02}.md')
+                shots[-1]['reference_image'] = '' if group == 'portrait' or index <= 4 else f'docs/images/halfbody_{index:02}_pose_reference.'+('jpg' if index == 5 else 'png')
+                shots[-1]['reference_pr'] = 1 if group == 'portrait' or index <= 4 else index-2
+            if group == 'half_body':
+                shots[-1]['include_hands'] = ['left_wrist', 'right_wrist']
                 shots[-1]['camera']['camera_lens'] = 75
-                shots[-1]['performance']['expression_strength'] = .4
+                shots[-1]['performance']['expression_strength'] = .4 if expression == 'smile' else .85
+            if group == 'half_body' and index <= 4:
+                shots[-1]['body_reference'] = True
     return shots
 
 
 def current_recipe(settings):
-    """Preserve 12+9+9+9 target slots while using the user's controls.
+    """Preserve 12+12+9+9 target slots while using the user's controls.
 
     Portraits always remain square even if the manual camera is 3:4.
     """
-    return [dict({key: value for key, value in shot.items() if key not in {'camera', 'performance', 'include_hands', 'elevation'}},
+    return [dict({key: value for key, value in shot.items() if key not in {'camera', 'performance', 'include_hands', 'elevation', 'pose_provider', 'asset_slot'}},
                  pose=settings.pose, expression=settings.expression,
                  support='seat' if settings.pose in {'sit_chair', 'sit_side'} else 'floor',
                  **({'camera': {'camera_aspect': 'SQUARE'}} if shot['group'] == 'portrait' else {}))
@@ -369,6 +414,34 @@ def apply_shot_overrides(shots, library):
             shot['pose_overridden'] = True
         result.append(shot)
     return result
+
+
+def resolve_shot_assets(shots, library, rig_key):
+    """Only use captured, model-specific poses; never invent an AC fallback."""
+    result = []
+    for original in shots:
+        shot = dict(original)
+        if shot.get('pose_provider') == 'AnimCharTools':
+            if shot.get('pose_overridden'):
+                shot['pose_provider'] = 'USER'
+                shot['asset_status'] = 'CUSTOM'
+            else:
+                asset = library['shot_assets'].get(f'{rig_key}|{shot["asset_slot"]}')
+                if asset and asset['rig'] == rig_key and asset['pose'] in library['poses']:
+                    shot['pose'] = asset['pose']
+                    shot['asset_status'] = 'REVIEWED' if asset['reviewed'] else 'NEEDS_FIX' if asset.get('review_note') else 'CAPTURED'
+                    shot['review_note'] = asset.get('review_note', '')
+                    shot['asset_reference'] = asset['reference']
+                    shot['performance'] = dict(shot.get('performance', {}), hand_pose='KEEP', head_angles=[0, 0, 0], pose_strength=1)
+                else:
+                    shot['asset_status'] = 'MISSING'
+        result.append(shot)
+    return result
+
+
+def require_shot_asset(shot):
+    if shot.get('pose_provider') == 'AnimCharTools' and shot.get('asset_status') not in {'CAPTURED', 'NEEDS_FIX', 'REVIEWED'}:
+        raise ValueError(f'{shot["group"]} {shot["index"]:02} 尚未绑定当前模型的 AnimChar 动作；请先捕捉参考图或保存 Pose Editor 结果。')
 
 
 class ShotSettings:

@@ -174,6 +174,9 @@ scene.render.use_compositing = True
 initial_camera = scene.camera
 initial_world = scene.world
 count = len(bpy.data.objects)
+# The explicit full material smoke option uses manual settings, independently
+# of account-backed AnimChar captures. Normal smoke runs produce no images.
+settings.dataset_variation = 'CURRENT'
 assert bpy.ops.ml.render_dataset(test_only=False) == {'FINISHED'}
 assert len(bpy.data.objects) == count
 assert len(bpy.data.meshes) == mesh_count
@@ -184,9 +187,9 @@ assert all(abs(rig.pose.bones['左腕'].matrix_basis[i][j] - old_matrix[i][j]) <
 assert abs(structural.value - .3) < .0001
 folder = sorted((ROOT / 'test_output').glob('smoke_character_*'))[-1]
 manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
-assert manifest['status'] == 'complete' and len(manifest['shots']) == 39
-assert len(list(folder.rglob('*.png'))) == 39
-assert len(list(folder.rglob('*.txt'))) == 39
+assert manifest['status'] == 'complete' and len(manifest['shots']) == 42
+assert len(list(folder.rglob('*.png'))) == 42
+assert len(list(folder.rglob('*.txt'))) == 42
 assert not settings.running
 
 # Exercise an interrupted session and a setup failure as well as successful completion.

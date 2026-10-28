@@ -150,18 +150,32 @@ def normalized_name(name):
 
 
 def empty_library():
-    return {'schema_version': 1, 'expressions': {}, 'poses': {}, 'cameras': {}, 'bone_map': {}, 'pose_options': {}, 'shot_overrides': {}}
+    return {'schema_version': 2, 'expressions': {}, 'poses': {}, 'cameras': {}, 'bone_map': {}, 'pose_options': {}, 'shot_overrides': {}}
 
 
 def validate_library(value):
-    if not isinstance(value, dict) or value.get('schema_version', 1) != 1:
+    if not isinstance(value, dict) or value.get('schema_version', 1) not in (1, 2):
         raise ValueError('不支持的预设文件版本。')
+    version = value.get('schema_version', 1)
     result = empty_library()
     for category in ('expressions', 'poses', 'cameras', 'bone_map', 'pose_options', 'shot_overrides'):
         data = value.get(category, {})
         if not isinstance(data, dict):
             raise ValueError('预设分类格式错误：' + category)
         result[category] = data
+    if version == 1:
+        # Existing .blend and JSON portrait overrides referred to the old
+        # 9-shot layout. Keep their intent away from the new neutral four views.
+        portrait_slots = {1: 1, 2: 7, 3: 5, 4: 11, 5: 8, 6: 9, 7: 6, 8: 10, 9: 12}
+        migrated = {}
+        for slot, override in result['shot_overrides'].items():
+            if isinstance(slot, str) and slot.startswith('portrait:'):
+                suffix = slot.split(':', 1)[1]
+                if not suffix.isdigit() or int(suffix) not in portrait_slots:
+                    raise ValueError('旧版肖像镜头位置必须为 1–9。')
+                slot = f"portrait:{portrait_slots[int(suffix)]}"
+            migrated[slot] = override
+        result['shot_overrides'] = migrated
     def numbers(item):
         if isinstance(item, dict):
             if not all(isinstance(k, str) and len(k) <= 256 for k in item):
@@ -215,8 +229,10 @@ def validate_library(value):
         if not isinstance(options['leg_mode'], str) or options['leg_mode'] not in {'KEEP', 'FK'}:
             raise ValueError('腿部控制必须保留模型 IK 或使用 FK。')
     for slot, override in result['shot_overrides'].items():
-        if not any(re.fullmatch(re.escape(group)+r':[1-9]', slot) for group in GROUPS):
-            raise ValueError('镜头位置必须为有效分组和 1–9 序号。')
+        if not isinstance(slot, str) or not any(
+                re.fullmatch(re.escape(group) + (r':(?:[1-9]|1[0-2])' if group == 'portrait' else r':[1-9]'), slot)
+                for group in GROUPS):
+            raise ValueError('镜头位置必须为肖像 1–12 或其他分组 1–9。')
         if not isinstance(override, dict) or set(override)-{'pose', 'expression', 'include_hands', 'title', 'support', 'azimuth'}:
             raise ValueError('镜头替换包含不支持的参数。')
         if not isinstance(override.get('pose'), str) or override['pose'] not in set(POSE_LABELS) | set(result['poses']):
@@ -244,15 +260,20 @@ def safe_name(value):
 # title, pose, expression, azimuth, elevation, head pitch/yaw/roll, focus, hands.
 SHOT_PLANS = {
     'portrait': (
-        ('正面识别照', 'relaxed', 'neutral', 0, 0, (0, 0, 0), 'HEAD', ()),
-        ('微笑侧颜', 'elegant', 'smile', -20, 2, (0, -8, -4), 'HEAD', ()),
-        ('脸侧比耶', 'peace_face', 'wink', 18, 3, (0, 5, -8), 'HEAD', ('right_wrist',)),
-        ('开心闭眼', 'hands_front', 'happy', -12, 4, (0, -4, 4), 'FACE', ()),
-        ('害羞低头', 'shy', 'smile', 12, 6, (6, 2, 6), 'HEAD', ()),
-        ('思考侧脸', 'thinking', 'neutral', 30, 0, (2, 10, 5), 'HEAD', ('right_wrist',)),
-        ('惊讶反应', 'relaxed', 'surprised', -28, 1, (-2, -8, 0), 'FACE', ()),
-        ('认真神情', 'hand_hip', 'angry', 24, -2, (-2, 8, -3), 'FACE', ()),
-        ('安静侧颜', 'elegant', 'sad', -38, 2, (3, -12, 2), 'HEAD', ()),
+        # Four neutral head references: move the camera, never the head.
+        ('标准正面大头照', 'relaxed', 'neutral', 0, 0, (0, 0, 0), 'HEAD', ()),
+        ('标准左侧面', 'relaxed', 'neutral', 90, 0, (0, 0, 0), 'HEAD', ()),
+        ('标准右侧面', 'relaxed', 'neutral', -90, 0, (0, 0, 0), 'HEAD', ()),
+        ('标准头部背面', 'relaxed', 'neutral', 180, 0, (0, 0, 0), 'HEAD', ()),
+        # Eight expressive portraits, with no extreme up-angle.
+        ('比耶 Wink', 'peace_face', 'wink', 15, 0, (0, 4, -6), 'HEAD', ('right_wrist',)),
+        ('惊喜', 'cat_paws', 'surprised', -10, 0, (0, -3, 0), 'HEAD', ('left_wrist', 'right_wrist')),
+        ('甜美笑容', 'elegant', 'smile', -15, 0, (0, -4, 4), 'HEAD', ()),
+        ('害羞', 'shy', 'smile', 12, 0, (3, 2, 5), 'HEAD', ('left_wrist', 'right_wrist')),
+        ('调皮点脸', 'thinking', 'wink', -10, 0, (0, 3, -3), 'HEAD', ('right_wrist',)),
+        ('傲娇神情', 'hand_hip', 'angry', 18, 0, (0, 7, -3), 'HEAD', ()),
+        ('元气开心', 'cheer', 'happy', -8, 0, (0, -3, -4), 'HEAD', ('left_wrist', 'right_wrist')),
+        ('温柔回眸', 'hands_behind', 'smile', -40, 0, (0, -15, 4), 'HEAD', ()),
     ),
     'half_body': (
         ('自然半身', 'relaxed', 'neutral', 0, 0, (0, 0, 0), 'UPPER', ()),
@@ -296,22 +317,29 @@ def recipe():
         for index, row in enumerate(SHOT_PLANS[group], 1):
             title, pose, expression, azimuth, elevation, head, focus, hands = row
             shots.append(dict(group=group, index=index, title=title, pose=pose, expression=expression,
+                              head_reference=(group == 'portrait' and index <= 4),
                               support='seat' if pose in {'sit_chair', 'sit_side'} else 'floor',
                               azimuth=azimuth, elevation=elevation, focus=focus, include_hands=list(hands),
                               performance={'head_angles': list(head), 'hand_pose': 'AUTO', 'pose_strength': 1,
                                            'expression_strength': .85 if expression != 'neutral' else 1},
                               camera={'camera_projection': 'PERSP', 'camera_lens': 85 if group == 'portrait' else 70,
-                                      'camera_aspect': 'PORTRAIT', 'camera_azimuth': 0, 'camera_elevation': 0,
+                                      'camera_aspect': 'SQUARE' if group == 'portrait' else 'PORTRAIT',
+                                      'camera_azimuth': 0, 'camera_elevation': 0,
                                       'camera_roll': 0, 'camera_zoom': 1, 'camera_shift_x': 0, 'camera_shift_y': 0,
                                       'camera_target_offset': [0, 0, 0], 'margin': 1.12}))
     return shots
 
 
 def current_recipe(settings):
-    """Keep the 9+9+9+9 shot targets, with the user's own performance/lens."""
+    """Preserve 12+9+9+9 target slots while using the user's controls.
+
+    Portraits always remain square even if the manual camera is 3:4.
+    """
     return [dict({key: value for key, value in shot.items() if key not in {'camera', 'performance', 'include_hands', 'elevation'}},
                  pose=settings.pose, expression=settings.expression,
-                 support='seat' if settings.pose in {'sit_chair', 'sit_side'} else 'floor') for shot in recipe()]
+                 support='seat' if settings.pose in {'sit_chair', 'sit_side'} else 'floor',
+                 **({'camera': {'camera_aspect': 'SQUARE'}} if shot['group'] == 'portrait' else {}))
+            for shot in recipe()]
 
 
 def dataset_coverage(shots):

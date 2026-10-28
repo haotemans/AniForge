@@ -118,9 +118,9 @@ with tempfile.TemporaryDirectory() as folder:
     dispatched.clear()
     with patch.object(addon.RenderSession, 'render', lambda self, context, shot: dispatched.append(shot.copy())):
         assert bpy.ops.ml.render_dataset(test_only=False) == {'FINISHED'}
-    assert len(dispatched) == 36 and dispatched == addon.recipe()
+    assert len(dispatched) == 39 and dispatched == addon.recipe()
     dispatched.clear()
-    settings.preview_group = 'portrait'; settings.plan_index = 3
+    settings.preview_group = 'portrait'; settings.plan_index = 5
     with patch.object(addon.RenderSession, 'render', lambda self, context, shot: dispatched.append(shot.copy())):
         assert bpy.ops.ml.render_dataset(use_plan_shot=True) == {'FINISHED'}
     assert [s['azimuth'] for s in dispatched] == [0, 90, 180]
@@ -148,13 +148,13 @@ with tempfile.TemporaryDirectory() as folder:
         session.prepare_shot(bpy.context, shot)
         projected = [world_to_camera_view(scene, session.camera, Vector(p)) for p in session.camera_meta['roi']]
         assert all(-.0001 <= p.x <= 1.0001 and -.0001 <= p.y <= 1.0001 and p.z > 0 for p in projected), shot['title']
-        assert (scene.render.resolution_x, scene.render.resolution_y) == (768, 1024)
+        assert (scene.render.resolution_x, scene.render.resolution_y) == ((1024, 1024) if shot['group'] == 'portrait' else (768, 1024))
         assert session.camera.data.type == 'PERSP'
     session.close('checked_without_rendering')
     assert before == (settings.camera_lens, settings.camera_projection, settings.camera_aspect, tuple(settings.head_angles), settings.hand_pose)
     assert not list(Path(folder).rglob('*.png'))
 assert bpy.ops.ml.shot_plan(report_only=True) == {'FINISHED'}
-assert len(json.loads(bpy.data.texts['AniForge 36 Shot Plan'].as_string())['shots']) == 36
+assert len(json.loads(bpy.data.texts['AniForge 39 Shot Plan'].as_string())['shots']) == 39
 assert bpy.ops.ml.shot_plan() == {'FINISHED'}
 before_cameras = len(bpy.data.cameras)
 settings.camera_aspect = 'LANDSCAPE'; settings.camera_shift_y = .4
@@ -210,12 +210,12 @@ settings.slot_left_hand = settings.slot_right_hand = True
 assert bpy.ops.ml.assign_shot_pose() == {'FINISHED'}
 shot = addon.dataset_plan(settings)[4]
 assert shot['pose'] == 'native IK pose' and shot['performance']['hand_pose'] == 'KEEP'
-assert len(addon.dataset_plan(settings)) == 36
+assert len(addon.dataset_plan(settings)) == 39
 settings.dataset_variation = 'CURRENT'
 assert all(s['pose'] == settings.pose and 'pose_overridden' not in s for s in addon.dataset_plan(settings))
 settings.dataset_variation = 'CYCLE'
 assert bpy.ops.ml.assign_shot_pose(reset=True) == {'FINISHED'}
-assert addon.dataset_plan(settings)[4]['pose'] == 'shy'
+assert addon.dataset_plan(settings)[4]['pose'] == 'peace_face'
 # The included-hand frame must contain fingertips beyond the old wrist box.
 addon.restore_seated(rig)
 for bone in rig.pose.bones:
@@ -229,5 +229,18 @@ configure_camera(bpy.context, settings, meshes, camera, {'group': 'portrait', 'a
 tip = rig.matrix_world @ rig.pose.bones['左人指1'].tail
 projected = world_to_camera_view(scene, camera, tip)
 assert 0 <= projected.x <= 1 and 0 <= projected.y <= 1 and projected.z > 0
-print('ANIFORGE_PERFORMANCE_CAMERA_OK: native IK / preset switching, slot overrides, 17 deterministic poses, 72 camera fits + 36 linked shots; no renders')
+# Clamp on property changes and file migration, before panel drawing or an
+# operator can look up an absent slot in a nine-photo group.
+settings.preview_group = 'portrait'; settings.plan_index = 12
+assert settings.plan_index == 12
+for group in ('half_body', 'full_body', 'outfit_detail'):
+    settings.preview_group = group
+    assert settings.plan_index == 9
+    settings.plan_index = 12
+    assert settings.plan_index == 9
+    settings['plan_index'] = 12
+    addon.migrate_settings()
+    assert settings.plan_index == 9
+    settings.preview_group = 'portrait'; settings.plan_index = 12
+print('ANIFORGE_PERFORMANCE_CAMERA_OK: native IK / preset switching, slot overrides, 17 deterministic poses, 72 camera fits + 39 linked shots; no renders')
 addon.unregister()

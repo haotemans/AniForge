@@ -81,5 +81,5 @@ with tempfile.TemporaryDirectory() as folder:
     for manifest in Path(folder).rglob('manifest.json'):
         assert 'physics_settings' not in json.loads(manifest.read_text())
 assert scene.frame_current == frame
-print('STATIC_RENDER_OK: 36 shots, legacy settings ignored, no workers/images, dynamics restored after success/error')
+print('STATIC_RENDER_OK: 39 shots, legacy settings ignored, no workers/images, dynamics restored after success/error')
 addon.unregister()

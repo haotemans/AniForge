@@ -176,9 +176,9 @@ assert all(abs(rig.pose.bones['左腕'].matrix_basis[i][j] - old_matrix[i][j]) <
 assert abs(structural.value - .3) < .0001
 folder = sorted((ROOT / 'test_output').glob('smoke_character_*'))[-1]
 manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
-assert manifest['status'] == 'complete' and len(manifest['shots']) == 36
-assert len(list(folder.rglob('*.png'))) == 36
-assert len(list(folder.rglob('*.txt'))) == 36
+assert manifest['status'] == 'complete' and len(manifest['shots']) == 39
+assert len(list(folder.rglob('*.png'))) == 39
+assert len(list(folder.rglob('*.txt'))) == 39
 assert not settings.running
 
 # Exercise an interrupted session and a setup failure as well as successful completion.

@@ -11,6 +11,7 @@ from .core import (BONES, MORPHS, EXPRESSION_CHANNELS, EXPRESSION_LABELS, POSE_L
                    normalized_name, empty_library, validate_library)
 
 _ENUM_CACHE = {}
+_BONE_MAP_CACHE = (None, {})
 
 
 def custom_presets(settings):
@@ -39,7 +40,16 @@ def aliases(item):
 
 
 def find_bone(rig, key, settings=None):
-    override = custom_presets(settings)['bone_map'].get(key) if settings else None
+    # Full local VPD libraries can contain thousands of matrices. Bone lookup
+    # only needs the small mapping; writers still receive fresh libraries.
+    global _BONE_MAP_CACHE
+    if settings:
+        raw = settings.presets_json
+        if raw != _BONE_MAP_CACHE[0]:
+            _BONE_MAP_CACHE = (raw, custom_presets(settings)['bone_map'])
+        override = _BONE_MAP_CACHE[1].get(key)
+    else:
+        override = None
     if override:
         return rig.pose.bones.get(override)
     expected = {normalized_name(n) for n in BONES[key]}
@@ -174,6 +184,8 @@ def restore_seated(rig):
     state = json.loads(rig.get(SEATED_STATE, '{}'))
     for name, values in state.get('bones', {}).items():
         if name in rig.pose.bones:
+            if name in state.get('modes', {}):
+                rig.pose.bones[name].rotation_mode = state['modes'][name]
             rig.pose.bones[name].matrix_basis = Matrix(values)
     for name, constraints in state.get('constraints', {}).items():
         bone = rig.pose.bones.get(name)
@@ -184,6 +196,14 @@ def restore_seated(rig):
     if SEATED_STATE in rig:
         del rig[SEATED_STATE]
     bpy.context.view_layer.update()
+
+
+def remember_pose_state(rig, bones):
+    """Extend the temporary pose baseline so switching presets restores IK/FK."""
+    state = json.loads(rig.get(SEATED_STATE, '{}'))
+    state.setdefault('bones', {}).update({b.name: [list(row) for row in b.matrix_basis] for b in bones})
+    state.setdefault('modes', {}).update({b.name: b.rotation_mode for b in bones})
+    rig[SEATED_STATE] = json.dumps(state)
 
 
 def begin_leg_fk(settings):
@@ -239,13 +259,16 @@ def apply_seated(settings, name, side, forward, to_rig):
 def pose_apply(settings, name):
     rig = settings.armature
     restore_seated(rig)
-    custom = custom_presets(settings)['poses'].get(name)
+    library = custom_presets(settings)
+    custom = library['poses'].get(name)
     changed = []
     strength = settings.pose_strength
     if custom is not None:
-        if any((bone := find_bone(rig, key, settings)) and bone.name in custom and Matrix(custom[bone.name]).to_quaternion().angle > .5
-               for key in ('left_leg', 'right_leg')):
+        leg_mode = library['pose_options'].get(name, {}).get('leg_mode')
+        if leg_mode == 'FK' or leg_mode is None and any((bone := find_bone(rig, key, settings)) and bone.name in custom and Matrix(custom[bone.name]).to_quaternion().angle > .5
+                                                       for key in ('left_leg', 'right_leg')):
             begin_leg_fk(settings)
+        remember_pose_state(rig, [rig.pose.bones[n] for n in custom if n in rig.pose.bones])
         for bone_name, values in custom.items():
             bone = rig.pose.bones.get(bone_name)
             if bone:

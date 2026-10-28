@@ -4,7 +4,7 @@ import math
 from mathutils import Vector, Quaternion
 from .material_profiles import material_role
 from .core import ShotSettings
-from .performance import find_bone
+from .performance import find_bone, finger_bones, bone_side
 
 CAMERA_FIELDS = ('camera_projection', 'camera_lens', 'camera_azimuth', 'camera_elevation', 'camera_roll',
                  'camera_zoom', 'camera_shift_x', 'camera_shift_y', 'camera_target_offset', 'camera_aspect',
@@ -148,6 +148,16 @@ def configure_camera(context, settings, meshes, camera, shot):
         if point is not None:
             radius = body_height*.065
             points += box_points(point-Vector((radius, radius, radius)), point+Vector((radius, radius, radius)))
+            # A raised/extended finger can lie outside a wrist-sized box.
+            # Follow the actual evaluated fingers of the requested hand.
+            side_name = key.split('_', 1)[0]
+            padding = Vector((body_height*.01,)*3)
+            for bone, _, _ in finger_bones(rig):
+                if bone_side(bone) == side_name:
+                    evaluated = evaluated_rig.pose.bones[bone.name]
+                    for local in (evaluated.head, evaluated.tail):
+                        tip = evaluated_rig.matrix_world @ local
+                        points += box_points(tip-padding, tip+padding)
             included.append(key)
     if included:
         target = Vector(tuple((min(p[i] for p in points)+max(p[i] for p in points))*.5 for i in range(3)))

@@ -1,4 +1,5 @@
 import importlib.util
+import copy
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -80,6 +81,51 @@ class RecipeTests(unittest.TestCase):
                         {'cameras': {'bad': {'camera_roll': 'invalid'}}}]:
             with self.assertRaises(ValueError):
                 core.validate_library(invalid)
+
+    def test_local_pose_slots_preserve_captured_gestures_and_36_photo_budget(self):
+        library = core.empty_library()
+        library['poses']['local heart'] = {}
+        library['expressions']['local smile'] = {}
+        library['shot_overrides']['portrait:5'] = {'pose': 'local heart', 'expression': 'local smile',
+            'title': 'Face heart', 'include_hands': ['left_wrist', 'right_wrist'], 'support': 'floor', 'azimuth': -35}
+        library = core.validate_library(library)
+        original = core.recipe()
+        snapshot = copy.deepcopy(original)
+        shots = core.apply_shot_overrides(original, library)
+        replaced = shots[4]
+        self.assertEqual(replaced['pose'], 'local heart')
+        self.assertEqual(replaced['azimuth'], -35)
+        self.assertEqual(replaced['performance']['head_angles'], [0, 0, 0])
+        self.assertEqual(replaced['performance']['hand_pose'], 'KEEP')
+        self.assertEqual(replaced['performance']['expression_strength'], 1)
+        self.assertEqual(replaced['include_hands'], ['left_wrist', 'right_wrist'])
+        self.assertEqual(original, snapshot)
+        self.assertEqual(core.dataset_coverage(shots)['per_group'], {g: 9 for g in core.GROUPS})
+        self.assertEqual(shots[27:], original[27:])
+        self.assertEqual(core.dataset_coverage(shots)['seated_photos'], 3)
+        self.assertEqual(core.validate_library({})['shot_overrides'], {})
+
+    def test_invalid_shot_overrides_reject_missing_and_malformed_references(self):
+        for slot, override in [('portrait:10', {'pose': 'wave'}), ('unknown:1', {'pose': 'wave'}),
+                ('portrait:1', []), ('portrait:1', {'pose': 'missing'}),
+                ('portrait:1', {'pose': []}), ('portrait:1', {'pose': 'wave', 'expression': {}}),
+                ('portrait:1', {'pose': 'wave', 'include_hands': ['head']}),
+                ('portrait:1', {'pose': 'wave', 'include_hands': [{}]}),
+                ('portrait:1', {'pose': 'wave', 'support': []}),
+                ('portrait:1', {'pose': 'wave', 'azimuth': 181}),
+                ('portrait:1', {'pose': 'wave', 'azimuth': []}),
+                ('portrait:1', {'pose': 'wave', 'arbitrary': 3})]:
+            with self.subTest(slot=slot, override=override), self.assertRaises(ValueError):
+                core.validate_library({'shot_overrides': {slot: override}})
+
+    def test_imported_pose_ik_policy_is_validated_and_backwards_compatible(self):
+        self.assertEqual(core.validate_library({})['pose_options'], {})
+        valid = {'poses': {'imported': {}}, 'pose_options': {'imported': {'leg_mode': 'KEEP'}}}
+        self.assertEqual(core.validate_library(valid)['pose_options'], valid['pose_options'])
+        for invalid in ({'missing': {'leg_mode': 'KEEP'}}, {'imported': {'leg_mode': []}},
+                        {'imported': {'leg_mode': 'AUTO'}}, {'imported': {}}):
+            with self.assertRaises(ValueError):
+                core.validate_library({'poses': {'imported': {}}, 'pose_options': invalid})
 
     def test_caption_does_not_invent_pose(self):
         text = core.caption('test_character', 'outfit_detail', 'neutral', '')

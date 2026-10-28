@@ -184,5 +184,50 @@ with tempfile.TemporaryDirectory() as folder:
     assert all(abs(bone.matrix_basis[i][j]-matrix[i][j]) < .0001 and bone.rotation_mode == mode for bone, mode, matrix in before_pose for i in range(4) for j in range(4))
     assert all(abs(key.value-value) < .0001 for key, value in before_shapes)
 
-print('ANIFORGE_PERFORMANCE_CAMERA_OK: 17 deterministic poses, seated leg IK restore, 72 camera fits + 36 linked shots; no renders')
+# Imported poses must retain authored foot IK, and must not leave transformed
+# legs, IK controls or fingers behind when changing back to a builtin pose.
+addon.restore_seated(rig)
+for bone in rig.pose.bones:
+    bone.matrix_basis = Matrix.Identity(4)
+baseline = addon.capture_pose(settings)
+custom = addon.custom_presets(settings)
+custom['poses']['native IK pose'] = addon.capture_pose(settings)
+custom['poses']['native IK pose']['左足'] = [list(row) for row in Matrix.Rotation(1.0, 4, 'X')]
+custom['poses']['native IK pose']['センター'] = [list(row) for row in Matrix.Translation((.1, 0, -.1))]
+custom['poses']['native IK pose']['左人指1'] = [list(row) for row in Matrix.Rotation(.6, 4, 'X')]
+custom['pose_options']['native IK pose'] = {'leg_mode': 'KEEP'}
+addon.store_presets(settings, custom)
+settings.pose = 'native IK pose'; settings.expression = 'smile'
+settings.head_angles = (0, 0, 0); settings.hand_pose = 'KEEP'
+addon.pose_apply(settings, settings.pose)
+assert not ik.mute and rig.pose.bones['センター'].location.length > .05
+addon.pose_apply(settings, 'relaxed')
+assert not ik.mute and rig.pose.bones['センター'].location.length < .00001
+for name in ('左足', '左人指1'):
+    assert all(abs(rig.pose.bones[name].matrix_basis[i][j]-baseline[name][i][j]) < .00001 for i in range(4) for j in range(4))
+settings.preview_group = 'portrait'; settings.plan_index = 5
+settings.slot_left_hand = settings.slot_right_hand = True
+assert bpy.ops.ml.assign_shot_pose() == {'FINISHED'}
+shot = addon.dataset_plan(settings)[4]
+assert shot['pose'] == 'native IK pose' and shot['performance']['hand_pose'] == 'KEEP'
+assert len(addon.dataset_plan(settings)) == 36
+settings.dataset_variation = 'CURRENT'
+assert all(s['pose'] == settings.pose and 'pose_overridden' not in s for s in addon.dataset_plan(settings))
+settings.dataset_variation = 'CYCLE'
+assert bpy.ops.ml.assign_shot_pose(reset=True) == {'FINISHED'}
+assert addon.dataset_plan(settings)[4]['pose'] == 'shy'
+# The included-hand frame must contain fingertips beyond the old wrist box.
+addon.restore_seated(rig)
+for bone in rig.pose.bones:
+    bone.matrix_basis = Matrix.Identity(4)
+scene.render.pixel_aspect_x = scene.render.pixel_aspect_y = 1
+settings.camera_shift_x = settings.camera_shift_y = settings.camera_roll = 0
+settings.camera_zoom = 1; settings.camera_target_offset = (0, 0, 0)
+settings.camera_aspect = 'PORTRAIT'; settings.camera_projection = 'PERSP'
+bpy.context.view_layer.update()
+configure_camera(bpy.context, settings, meshes, camera, {'group': 'portrait', 'azimuth': 0, 'include_hands': ['left_wrist']})
+tip = rig.matrix_world @ rig.pose.bones['左人指1'].tail
+projected = world_to_camera_view(scene, camera, tip)
+assert 0 <= projected.x <= 1 and 0 <= projected.y <= 1 and projected.z > 0
+print('ANIFORGE_PERFORMANCE_CAMERA_OK: native IK / preset switching, slot overrides, 17 deterministic poses, 72 camera fits + 36 linked shots; no renders')
 addon.unregister()

@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 7, 0),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 8, 0),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 36-shot LoRA dataset rendering',
     'category': 'Render',
@@ -16,7 +16,7 @@ from bpy_extras.io_utils import ImportHelper, ExportHelper
 from mathutils import Vector, Matrix
 
 from .core import (STYLES, GROUPS, MORPHS, BONES, POSE_ROTATIONS, POSE_DIRECTIONS, POSE_LABELS,
-                   EXPRESSION_LABELS, SEATED_POSES, ShotSettings, current_recipe, dataset_coverage, recipe, three_view_recipe, caption, safe_name, write_json)
+                   EXPRESSION_LABELS, SEATED_POSES, ShotSettings, current_recipe, apply_shot_overrides, dataset_coverage, recipe, three_view_recipe, caption, safe_name, write_json)
 from .material_profiles import material_role, alpha_image, face_light, hair_color
 from .performance import (aliases, find_bone, shape_blocks, custom_presets, store_presets, enum_presets,
                           expression_apply, pose_apply, capture_expression, capture_pose, restore_seated, SEATED_STATE)
@@ -188,6 +188,12 @@ class MLSettings(bpy.types.PropertyGroup):
     portrait_focus: EnumProperty(name='肖像范围', items=[('HEAD', '头肩（按脸部定位）', ''), ('FACE', '脸部特写', '')], default='HEAD')
     dataset_variation: EnumProperty(name='36 张拍摄方案', items=[('CYCLE', '二次元姿势 / 表情 / 镜头联动', '每张使用编排的手势、表情、头部与镜头'), ('CURRENT', '当前姿势 / 表情 / 镜头参数', '沿用当前控制，仍拍四组各九个目标')], default='CYCLE')
     plan_index: IntProperty(name='组内镜头', default=1, min=1, max=9)
+    pose_folder: StringProperty(name='本地 VPD 目录', subtype='DIR_PATH')
+    pose_import_scale: FloatProperty(name='VPD 导入比例', default=.08, min=.0001, max=10)
+    pose_folder_report: StringProperty(default='')
+    slot_left_hand: BoolProperty(name='保留左手势入镜', default=False)
+    slot_right_hand: BoolProperty(name='保留右手势入镜', default=False)
+    slot_seat: BoolProperty(name='此镜头需要坐凳', default=False)
     physics_mode: EnumProperty(name='衣服 / 头发物理', items=[('AUTO', '有 MMD 物理时自动稳定', '', 0), ('MMD', '必须运行 MMD 物理', '', 1), ('OFF', '关闭', '', 2)], default='AUTO')
     physics_source: StringProperty(name='原 PMX / PMD', subtype='FILE_PATH')
     physics_scale: FloatProperty(name='源模型导入比例', default=.08, min=.0001, max=100)
@@ -337,6 +343,7 @@ class ML_OT_preset(bpy.types.Operator):
                 changed = pose_apply(settings, settings.pose)
                 self.report({'INFO'}, f'姿势映射 {len(changed)} 根骨骼；请检查 IK 和骨骼轴向。')
             elif self.action == 'RESET_POSE':
+                restore_seated(settings.armature)
                 for bone in settings.armature.pose.bones:
                     bone.matrix_basis = Matrix.Identity(4)
                 settings.head_angles = (0, 0, 0)
@@ -393,7 +400,7 @@ class ML_OT_import_presets(bpy.types.Operator, ImportHelper):
                 raise ValueError('预设文件不能超过 8 MiB。')
             incoming = validate_library(json.loads(path.read_text(encoding='utf-8-sig')))
             saved = custom_presets(context.scene.ml_settings)
-            for category in ('expressions', 'poses', 'cameras', 'bone_map'):
+            for category in ('expressions', 'poses', 'cameras', 'bone_map', 'pose_options', 'shot_overrides'):
                 saved[category].update(incoming[category])
             store_presets(context.scene.ml_settings, saved)
             self.report({'INFO'}, '已导入预设；同名项目已更新。'); return {'FINISHED'}
@@ -410,55 +417,12 @@ class ML_OT_vpd(bpy.types.Operator, ImportHelper):
     def execute(self, context):
         settings = context.scene.ml_settings
         try:
-            import importlib
-            from .core import normalized_name
+            from .pose_library import read_vpd
             meshes = model_meshes(settings)
-            package = next((item.module for item in context.preferences.addons if item.module == 'mmd_tools' or item.module.endswith('.mmd_tools')), None)
-            if not package:
-                raise ValueError('请先启用 MMD Tools，才能导入 VPD。')
-            if settings.armature.animation_data and settings.armature.animation_data.action:
-                raise ValueError('请先在角色副本中解除活动 Action，再导入静态 VPD。')
-            path = Path(self.filepath)
-            if path.stat().st_size > 1024*1024:
-                raise ValueError('VPD 文件不能超过 1 MiB。')
-            data = importlib.import_module(package + '.core.vpd').File()
-            data.load(filepath=str(path))
-            converter = importlib.import_module(package + '.core.vmd.importer').BoneConverter
-            indexed = {normalized_name(alias): bone for bone in settings.armature.pose.bones for alias in aliases(bone) if alias}
-            matched = [(record, indexed[normalized_name(record.bone_name)]) for record in data.bones if normalized_name(record.bone_name) in indexed]
-            if not matched:
-                raise ValueError('VPD 中没有匹配当前骨架的骨骼。')
-            matrices = []
-            for record, bone in matched:
-                convert = converter(bone, self.scale)
-                matrix = Matrix.Translation(convert.convert_location(record.location)) @ convert.convert_rotation(record.rotation).to_matrix().to_4x4()
-                if any(not math.isfinite(v) for row in matrix for v in row):
-                    raise ValueError('VPD 骨骼数据包含非有限数值。')
-                matrices.append((bone, matrix))
-            if any(not math.isfinite(m.weight) or not -10 <= m.weight <= 10 for m in data.morphs):
-                raise ValueError('VPD 表情权重无效。')
-            name = settings.preset_name.strip() or path.stem[:80]
-            if len(name) > 80:
-                raise ValueError('预设名称请控制在 80 字符以内。')
-            for bone in settings.armature.pose.bones:
-                bone.matrix_basis = Matrix.Identity(4)
-            for bone, matrix in matrices:
-                bone.matrix_basis = matrix
-            context.view_layer.update()
-            saved = custom_presets(settings)
-            saved['poses'][name] = capture_pose(settings)
-            morphs = {normalized_name(m.morph_name): m.weight for m in data.morphs}
-            matched_morphs = [(key, morphs[normalized_name(key.name)]) for _, keys in shape_blocks(meshes)
-                              for key in keys[1:] if normalized_name(key.name) in morphs]
-            if matched_morphs:
-                expression_apply(settings, meshes, 'neutral')
-                for key, weight in matched_morphs:
-                    key.value = weight
-                saved['expressions'][name] = {obj.name: {key.name: key.value for key in keys[1:] if normalized_name(key.name) in morphs}
-                                               for obj, keys in shape_blocks(meshes)}
-            store_presets(settings, saved)
+            report = read_vpd(settings, meshes, self.filepath, settings.preset_name.strip() or None, self.scale)
+            name = report['name']
             settings.pose = name; settings.pose_strength = 1; settings.hand_pose = 'KEEP'; settings.head_angles = (0, 0, 0)
-            if matched_morphs:
+            if report['has_expression']:
                 settings.expression = name; settings.expression_strength = 1
             self.report({'INFO'}, 'VPD 已导入并保存为：' + name)
             return {'FINISHED'}
@@ -496,8 +460,91 @@ class ML_OT_mapping(bpy.types.Operator):
             self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
 
 
+class ML_OT_pose_folder(bpy.types.Operator):
+    bl_idname = 'ml.import_pose_folder'; bl_label = '导入本地单人姿势并安排镜头'; bl_options = {'REGISTER', 'UNDO'}
+    assign_references: BoolProperty(name='安排已识别的参考动作', default=True)
+
+    def execute(self, context):
+        from .pose_library import scan_pose_folder, read_vpd, REFERENCE_SLOTS, REFERENCE_CAMERA_OFFSETS
+        settings = context.scene.ml_settings
+        before_library = settings.presets_json
+        rig = settings.armature
+        if not rig:
+            self.report({'ERROR'}, '请先指定角色骨架。'); return {'CANCELLED'}
+        pose = [(bone, bone.rotation_mode, bone.matrix_basis.copy()) for bone in rig.pose.bones]
+        mutes = [(c, c.mute) for b in rig.pose.bones for c in b.constraints]
+        seated = rig.get(SEATED_STATE)
+        shapes = []
+        try:
+            meshes = model_meshes(settings)
+            shapes = [(key, key.value) for _, keys in shape_blocks(meshes) for key in keys]
+            if not settings.pose_folder.strip():
+                raise ValueError('请先选择本地 VPD 目录。')
+            entries = scan_pose_folder(bpy.path.abspath(settings.pose_folder))
+            singles = [entry for entry in entries if not entry['paired']]
+            if not singles:
+                raise ValueError('目录中没有可导入的单人 VPD。')
+            names = [entry['name'] for entry in singles]
+            if len(set(names)) != len(names):
+                raise ValueError('不同目录存在同名姿势，请按姿势包分别导入。')
+            reports = []
+            for entry in singles:
+                result = read_vpd(settings, meshes, entry['path'], entry['name'], settings.pose_import_scale, humanoid_only=True)
+                reports.append(dict(entry, **result))
+            library = custom_presets(settings)
+            if self.assign_references:
+                for entry in reports:
+                    if entry['role']:
+                        title, slot, hands = REFERENCE_SLOTS[entry['role']]
+                        angle = (entry['head_yaw']+REFERENCE_CAMERA_OFFSETS[entry['role']]+180) % 360-180
+                        library['shot_overrides'][slot] = {'pose': entry['name'], 'title': title, 'include_hands': hands,
+                                                          'support': 'floor', 'azimuth': round(angle, 3)}
+                store_presets(settings, library)
+            report = {'imported': reports, 'skipped_paired': [e for e in entries if e['paired']], 'renders': 0}
+            settings.pose_folder_report = json.dumps(report, ensure_ascii=False)
+            text = bpy.data.texts.get('AniForge Local Pose Report') or bpy.data.texts.new('AniForge Local Pose Report')
+            text.clear(); text.write(json.dumps(report, ensure_ascii=False, indent=2))
+            self.report({'INFO'}, f'已导入 {len(singles)} 个单人姿势，跳过 {len(entries)-len(singles)} 个双人部分；总输出仍为 36 张。')
+            return {'FINISHED'}
+        except Exception as exc:
+            settings.presets_json = before_library
+            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
+        finally:
+            restore_seated(rig)
+            for bone, mode, matrix in pose:
+                bone.rotation_mode = mode; bone.matrix_basis = matrix
+            for constraint, mute in mutes:
+                constraint.mute = mute
+            if seated:
+                rig[SEATED_STATE] = seated
+            for key, value in shapes:
+                key.value = value
+            context.view_layer.update()
+
+
+class ML_OT_assign_shot(bpy.types.Operator):
+    bl_idname = 'ml.assign_shot_pose'; bl_label = '将当前姿势预设用于此镜头'; bl_options = {'REGISTER', 'UNDO'}
+    reset: BoolProperty(default=False)
+
+    def execute(self, context):
+        try:
+            settings = context.scene.ml_settings; library = custom_presets(settings)
+            slot = f'{settings.preview_group}:{settings.plan_index}'
+            if self.reset:
+                library['shot_overrides'].pop(slot, None)
+            else:
+                hands = [name for name, enabled in (('left_wrist', settings.slot_left_hand), ('right_wrist', settings.slot_right_hand)) if enabled]
+                library['shot_overrides'][slot] = {'pose': settings.pose, 'expression': settings.expression,
+                                                  'include_hands': hands, 'title': '自选·'+settings.pose[:76],
+                                                  'support': 'seat' if settings.slot_seat or settings.pose in SEATED_POSES else 'floor'}
+            store_presets(settings, library)
+            self.report({'INFO'}, '镜头预设已更新；总数保持 36 张。'); return {'FINISHED'}
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
+
+
 def dataset_plan(settings):
-    return current_recipe(settings) if settings.dataset_variation == 'CURRENT' else recipe()
+    return current_recipe(settings) if settings.dataset_variation == 'CURRENT' else apply_shot_overrides(recipe(), custom_presets(settings))
 
 
 def update_preview_camera(context, settings, meshes, shot):
@@ -898,6 +945,11 @@ class ML_PT_panel(bpy.types.Panel):
                 row.operator('ml.preset', text='保存当前').action = save
                 box.operator('ml.preset', text='清空表情' if prop == 'expression' else '恢复静置姿势').action = 'RESET_EXPRESSION' if prop == 'expression' else 'RESET_POSE'
             col.operator('ml.import_vpd')
+            box = col.box(); box.prop(settings, 'pose_folder'); box.prop(settings, 'pose_import_scale')
+            box.operator('ml.import_pose_folder')
+            if settings.pose_folder_report:
+                report = json.loads(settings.pose_folder_report)
+                box.label(text=f'本地单人 {len(report["imported"])} · 双人部分 {len(report["skipped_paired"])}')
             row = col.row(); row.operator('ml.import_presets', text='导入 JSON'); row.operator('ml.export_presets', text='导出 JSON')
             col.operator('ml.frame_camera')
         elif section == 'CAMERA':
@@ -938,6 +990,9 @@ class ML_PT_panel(bpy.types.Panel):
             shot = next(s for s in dataset_plan(settings) if s['group'] == settings.preview_group and s['index'] == settings.plan_index)
             box.label(text=shot['title'])
             box.label(text=f'{POSE_LABELS.get(shot["pose"], shot["pose"])} / {EXPRESSION_LABELS.get(shot["expression"], shot["expression"])}')
+            box.prop(settings, 'slot_left_hand'); box.prop(settings, 'slot_right_hand'); box.prop(settings, 'slot_seat')
+            box.operator('ml.assign_shot_pose')
+            box.operator('ml.assign_shot_pose', text='恢复此镜头默认姿势').reset = True
             box.operator('ml.shot_plan')
             box.operator('ml.preview', text='渲染此镜头 1 张（含物理）').use_plan_shot = True
             box.operator('ml.shot_plan', text='查看 36 张拍摄清单').report_only = True
@@ -952,7 +1007,7 @@ class ML_PT_panel(bpy.types.Panel):
 
 CLASSES = (MLSettings, ML_OT_materials, ML_OT_textures, ML_OT_assign_textures, ML_OT_preset,
            ML_OT_export_presets, ML_OT_import_presets, ML_OT_vpd, ML_OT_mapping, ML_OT_frame_camera, ML_OT_shot_plan, ML_OT_physics_import,
-           ML_OT_render, ML_OT_preview, ML_PT_panel)
+           ML_OT_pose_folder, ML_OT_assign_shot, ML_OT_render, ML_OT_preview, ML_PT_panel)
 
 
 def register():

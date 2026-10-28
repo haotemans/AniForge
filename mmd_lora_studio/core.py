@@ -150,14 +150,14 @@ def normalized_name(name):
 
 
 def empty_library():
-    return {'schema_version': 1, 'expressions': {}, 'poses': {}, 'cameras': {}, 'bone_map': {}}
+    return {'schema_version': 1, 'expressions': {}, 'poses': {}, 'cameras': {}, 'bone_map': {}, 'pose_options': {}, 'shot_overrides': {}}
 
 
 def validate_library(value):
     if not isinstance(value, dict) or value.get('schema_version', 1) != 1:
         raise ValueError('不支持的预设文件版本。')
     result = empty_library()
-    for category in ('expressions', 'poses', 'cameras', 'bone_map'):
+    for category in ('expressions', 'poses', 'cameras', 'bone_map', 'pose_options', 'shot_overrides'):
         data = value.get(category, {})
         if not isinstance(data, dict):
             raise ValueError('预设分类格式错误：' + category)
@@ -209,6 +209,29 @@ def validate_library(value):
                 raise ValueError('未知镜头参数：' + key)
     if any(not isinstance(name, str) for name in result['bone_map'].values()):
         raise ValueError('骨骼映射必须为名称字符串。')
+    for name, options in result['pose_options'].items():
+        if name not in result['poses'] or not isinstance(options, dict) or set(options) != {'leg_mode'}:
+            raise ValueError('姿势选项必须引用已有姿势并指定腿部控制。')
+        if not isinstance(options['leg_mode'], str) or options['leg_mode'] not in {'KEEP', 'FK'}:
+            raise ValueError('腿部控制必须保留模型 IK 或使用 FK。')
+    for slot, override in result['shot_overrides'].items():
+        if not any(re.fullmatch(re.escape(group)+r':[1-9]', slot) for group in GROUPS):
+            raise ValueError('镜头位置必须为有效分组和 1–9 序号。')
+        if not isinstance(override, dict) or set(override)-{'pose', 'expression', 'include_hands', 'title', 'support', 'azimuth'}:
+            raise ValueError('镜头替换包含不支持的参数。')
+        if not isinstance(override.get('pose'), str) or override['pose'] not in set(POSE_LABELS) | set(result['poses']):
+            raise ValueError('镜头引用了不存在的姿势预设。')
+        if 'expression' in override and (not isinstance(override['expression'], str) or override['expression'] not in set(EXPRESSION_LABELS) | set(result['expressions'])):
+            raise ValueError('镜头引用了不存在的表情预设。')
+        if 'include_hands' in override and (not isinstance(override['include_hands'], list) or
+                                          any(not isinstance(name, str) or name not in {'left_wrist', 'right_wrist'} for name in override['include_hands'])):
+            raise ValueError('手势构图只能包含左 / 右手首。')
+        if 'title' in override and (not isinstance(override['title'], str) or not 1 <= len(override['title']) <= 80):
+            raise ValueError('镜头名称须为 1–80 字符。')
+        if not isinstance(override.get('support', 'floor'), str) or override.get('support', 'floor') not in {'floor', 'seat'}:
+            raise ValueError('镜头支撑物无效。')
+        if 'azimuth' in override and (not isinstance(override['azimuth'], (int, float)) or not -180 <= override['azimuth'] <= 180):
+            raise ValueError('镜头水平角须为 -180 到 180 度。')
     return result
 
 
@@ -299,6 +322,22 @@ def dataset_coverage(shots):
             'full_body_angles': [s['azimuth'] for s in shots if s['group'] == 'full_body'],
             'clothing_regions': [s.get('focus', '') for s in shots if s['group'] == 'outfit_detail'],
             'scope': 'planned; review actual occlusion, deformation and captions before training'}
+
+
+def apply_shot_overrides(shots, library):
+    result = []
+    for original in shots:
+        override = library['shot_overrides'].get(f'{original["group"]}:{original["index"]}')
+        shot = dict(original)
+        if override:
+            shot.update(override)
+            if shot['pose'] in library['poses']:
+                shot['performance'] = dict(shot.get('performance', {}), head_angles=[0, 0, 0], hand_pose='KEEP', pose_strength=1)
+            if shot.get('expression') in library['expressions']:
+                shot['performance'] = dict(shot.get('performance', {}), expression_strength=1)
+            shot['pose_overridden'] = True
+        result.append(shot)
+    return result
 
 
 class ShotSettings:

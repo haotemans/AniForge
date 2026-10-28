@@ -246,8 +246,28 @@ for group in ('half_body', 'full_body', 'outfit_detail'):
     assert settings.plan_index == 9
     settings.preview_group = 'portrait'; settings.plan_index = 12
 print('ANIFORGE_PERFORMANCE_CAMERA_OK: native IK / preset switching, slot overrides, 17 deterministic poses, 72 camera fits + 39 linked shots; no renders')
-from mmd_lora_studio.hand_pose import hand_frame
+from mmd_lora_studio.hand_pose import hand_frame, hand_shape_metrics
 from mmd_lora_studio.performance import finger_bones, bone_side
+# Articulated thumbs and a genuinely skinned fingertip prevent a regression
+# from being hidden by correct-looking bone matrices with rigid geometry.
+bpy.context.view_layer.objects.active = rig; rig.select_set(True)
+bpy.ops.object.mode_set(mode='EDIT')
+for prefix, sign in [('左', 1), ('右', -1)]:
+    parent = prefix+'手首'
+    for i, head, tail in [(0, (1.02, -.02, 1.4), (1.06, -.045, 1.4)),
+                           (1, (1.06, -.045, 1.4), (1.09, -.06, 1.4)),
+                           (2, (1.09, -.06, 1.4), (1.12, -.075, 1.4))]:
+        bone = rig.data.edit_bones.new(prefix+'親指'+str(i))
+        bone.head = (head[0]*sign, head[1], head[2]); bone.tail = (tail[0]*sign, tail[1], tail[2])
+        bone.parent = rig.data.edit_bones[parent]; bone.roll = .37*(i+1)*sign
+        parent = bone.name
+bpy.ops.object.mode_set(mode='OBJECT')
+tip_mesh = bpy.data.meshes.new('Thumb skin fixture')
+tip_mesh.from_pydata([(1.12, -.075, 1.4), (1.123, -.075, 1.4), (1.12, -.072, 1.4)], [], [(0, 1, 2)])
+tip_skin = bpy.data.objects.new('Thumb skin fixture', tip_mesh); scene.collection.objects.link(tip_skin)
+tip_skin.parent = rig
+group = tip_skin.vertex_groups.new(name='左親指2'); group.add([0, 1, 2], 1, 'REPLACE')
+modifier = tip_skin.modifiers.new('Thumb skinning', 'ARMATURE'); modifier.object = rig
 fingers = list(finger_bones(rig))
 addon.restore_seated(rig)
 for bone in rig.pose.bones:
@@ -266,6 +286,9 @@ for mirror in ('LEFT', 'RIGHT'):
     addon.pose_apply(effective, 'hand_hip')
     assert all(abs(b.matrix_basis[i][j]-first[b.name][i][j]) < .0001 for b in rig.pose.bones for i in range(4) for j in range(4))
     side = mirror.lower(); wrist = addon.find_bone(rig, side+'_wrist', settings)
+    shape = hand_shape_metrics(rig, side, wrist, addon.find_bone(rig, side+'_elbow', settings), fingers)
+    assert 10 < shape['thumb_open_degrees'] < 55, shape
+    assert 8 < shape['thumb_tip_bend_degrees'] < 40, shape
     _, inward, _ = hand_frame(rig, side, wrist, fingers)
     for bone, kind, segment in fingers:
         if bone_side(bone) == side and kind != 'thumb':
@@ -273,6 +296,14 @@ for mirror in ('LEFT', 'RIGHT'):
             delta = rest @ bone.matrix_basis.to_quaternion() @ rest.inverted()
             direction = delta @ (bone.bone.tail_local-bone.bone.head_local).normalized()
             assert direction.dot(inward) > .01, (mirror, bone.name)
+    if mirror == 'LEFT':
+        graph = bpy.context.evaluated_depsgraph_get()
+        posed_tip = tip_skin.evaluated_get(graph).data.vertices[0].co.copy()
+        thumb = rig.pose.bones['左親指2']; thumb_basis = thumb.matrix_basis.copy()
+        thumb.matrix_basis = Matrix.Identity(4); bpy.context.view_layer.update()
+        straight_tip = tip_skin.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.vertices[0].co.copy()
+        assert (posed_tip-straight_tip).length > .001
+        thumb.matrix_basis = thumb_basis; bpy.context.view_layer.update()
 for side in ('left', 'right'):
     opposite = 'right' if side == 'left' else 'left'
     a, b = mirror_positions['LEFT'][side], mirror_positions['RIGHT'][opposite]

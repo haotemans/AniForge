@@ -62,8 +62,8 @@ def shape_hand(rig, side, mode, fingers, rest_frame):
     if mode == 'KEEP':
         return []
     palm = rest_frame[1]
-    relaxed = {'index': (8, 10, 6), 'middle': (12, 14, 8), 'ring': (16, 18, 10), 'pinky': (20, 22, 12)}
-    hip = {'index': (4, 6, 3), 'middle': (6, 8, 4), 'ring': (8, 10, 5), 'pinky': (10, 12, 6)}
+    relaxed = {'index': (12, 20, 13), 'middle': (14, 23, 14), 'ring': (16, 25, 15), 'pinky': (18, 27, 16)}
+    hip = {'index': (10, 22, 10), 'middle': (13, 27, 12), 'ring': (17, 32, 15), 'pinky': (22, 36, 18)}
     roots = {kind: b for b, kind, i in fingers if i == 1 and bone_side(b) == side}
     thumbs = sorted([(i, b) for b, kind, i in fingers if kind == 'thumb' and bone_side(b) == side], key=lambda item: item[0])
     thumb_root = thumbs[0][1] if thumbs else None
@@ -75,9 +75,9 @@ def shape_hand(rig, side, mode, fingers, rest_frame):
         if bone_side(bone) != side:
             continue
         if mode == 'HIP' and bone == thumb_root:
-            # A thumb in its rest opposition points into the abdomen. Abduct
-            # it into the palm plane, toward the index side, for waist contact.
-            desired = (rest_frame[0]*.3+radial*.9-palm*.1).normalized()
+            # Keep a moderate thumb spread and a curved IP/MCP chain. A fully
+            # abducted, extended thumb creates the previous rigid L silhouette.
+            desired = (rest_frame[0]*.85+radial*.4-palm*.2).normalized()
             current = (bone.bone.tail_local-bone.bone.head_local).normalized()
             rest = bone.bone.matrix_local.to_quaternion()
             bone.rotation_mode = 'QUATERNION'
@@ -86,7 +86,7 @@ def shape_hand(rig, side, mode, fingers, rest_frame):
             continue
         extended = mode == 'OPEN' or mode == 'POINT' and kind == 'index' or mode == 'PEACE' and kind in {'index', 'middle'}
         if kind == 'thumb':
-            angle = -3 if mode == 'HIP' else (0, 5, 5)[min(segment, 2)] if mode in {'RELAXED', 'OPEN'} else (12, 25, 20)[min(segment, 2)]
+            angle = (0, 24, 22)[min(segment, 2)] if mode == 'HIP' else (0, 12, 15)[min(segment, 2)] if mode == 'RELAXED' else 0 if mode == 'OPEN' else (12, 25, 20)[min(segment, 2)]
         elif extended or segment == 0:
             angle = 0
         else:
@@ -97,6 +97,12 @@ def shape_hand(rig, side, mode, fingers, rest_frame):
             continue
         inverse = bone.bone.matrix_local.to_3x3().inverted()
         rotation = Quaternion((inverse @ hinge.normalized()).normalized(), math.radians(angle))
+        if mode in {'HIP', 'RELAXED'} and kind != 'thumb' and segment == 1 and 'middle' in roots:
+            middle = (roots['middle'].bone.tail_local-roots['middle'].bone.head_local).normalized()
+            a = (forward-palm*forward.dot(palm)).normalized()
+            b = (middle-palm*middle.dot(palm)).normalized()
+            close = math.atan2(palm.dot(a.cross(b)), a.dot(b))*(.6 if mode == 'HIP' else .35)
+            rotation = Quaternion((inverse @ palm).normalized(), close) @ rotation
         if mode == 'PEACE' and kind in {'index', 'middle'} and segment == 1:
             rotation = Quaternion((inverse @ palm).normalized(), math.radians(8 if kind == 'index' else -6)) @ rotation
         bone.rotation_mode = 'QUATERNION'; bone.rotation_quaternion = rotation
@@ -152,6 +158,28 @@ def fit_report(rig):
     return _REPORTS.get(rig.as_pointer(), {})
 
 
+def hand_shape_metrics(rig, side, wrist, elbow, fingers):
+    from .performance import bone_side
+    chains = {kind: sorted([(i, b) for b, k, i in fingers if k == kind and bone_side(b) == side], key=lambda item: item[0])
+              for kind in ('thumb', 'index', 'middle', 'ring', 'pinky')}
+    def angle(a, b):
+        return math.degrees(a.angle(b)) if min(a.length, b.length) > 1e-6 else None
+    def direction(b):
+        return (b.tail-b.head).normalized()
+    rest = hand_frame(rig, side, wrist, fingers)
+    rotation = wrist.matrix.to_quaternion() @ wrist.bone.matrix_local.to_quaternion().inverted()
+    forward, palm = rotation @ rest[0], rotation @ rest[1]
+    def in_plane(v):
+        return (v-palm*v.dot(palm)).normalized()
+    thumb = chains['thumb']
+    metrics = {'wrist_bend_degrees': angle(wrist.head-elbow.head, forward),
+               'thumb_open_degrees': angle(in_plane(direction(thumb[0][1])), in_plane(forward)) if thumb else None,
+               'thumb_tip_bend_degrees': angle(direction(thumb[-2][1]), direction(thumb[-1][1])) if len(thumb) >= 2 else None,
+               'finger_joint_bends': {kind: [angle(direction(a[1]), direction(b[1])) for a, b in zip(chain, chain[1:])]
+                                      for kind, chain in chains.items() if kind != 'thumb'}}
+    return metrics
+
+
 def apply_hand_hip(settings):
     from .performance import find_bone, finger_bones, bone_side, place_hand, blend_basis
     rig = settings.armature
@@ -173,7 +201,7 @@ def apply_hand_hip(settings):
     waist_z = origin.z+max((left.z+right.z)*.5-origin.z, unit)*.32
     tree, samples = surface_geometry(settings, fingers)
     distance = max(unit*12, (rig.matrix_world @ find_bone(rig, 'head', settings).head-origin).length*4) if find_bone(rig, 'head', settings) else unit*12
-    margin = unit*getattr(settings, 'hip_clearance', .04)
+    margin = unit*getattr(settings, 'hip_clearance', .02)
     hip_side = 'right' if getattr(settings, 'hip_hand', 'LEFT') == 'RIGHT' else 'left'
     reports = {}; changed = []
 
@@ -210,17 +238,28 @@ def apply_hand_hip(settings):
                     visible.append(abs(x))
                 if visible:
                     width = visible[-1]
-            contact, normal = front_surface(sign*width*.82, waist_z)
+            contact, normal = front_surface(sign*width*.68, waist_z)
             if contact is None:
-                contact = origin+side_axis*(sign*width*.82)+forward*unit*.55+up*(waist_z-origin.z)
+                contact = origin+side_axis*(sign*width*.68)+forward*unit*.55+up*(waist_z-origin.z)
                 normal = (forward+side_axis*sign*.25).normalized()
-            direction = -side_axis*sign+up*.22
+            # Aim the whole palm along the waist arc, not along a single
+            # flank triangle. A flank normal makes all fingers point forward
+            # into empty space even when the heel of the hand is near the hip.
+            _, inner_normal = front_surface(sign*width*.42, waist_z)
+            if inner_normal is not None:
+                normal = inner_normal
+            # Cloth folds can tilt a triangle normal sharply upward. Use the
+            # waist cross-section for hand orientation, keeping wrist extension
+            # modest instead of following the fold with an upturned palm.
+            normal.z = 0
+            normal = normal.normalized() if normal.length > 1e-6 else forward.copy()
+            direction = -side_axis*sign+up*.08
             direction = (direction-normal*direction.dot(normal)).normalized()
             inward = -normal
             target = contact+normal*(margin+world_palm*.14)-direction*world_palm*.55
             outward = forward
             offset = getattr(settings, 'hip_offset', (0, 0, 0))
-            pole = side_axis*sign+forward*.1-up*.7
+            pole = side_axis*sign+forward*.1-up*1.05
         else:
             shoulder = rig.matrix_world @ arm.head
             reach = (rig.matrix_world.to_3x3() @ (elbow.bone.head_local-arm.bone.head_local)).length
@@ -236,45 +275,76 @@ def apply_hand_hip(settings):
         target += unit*(side_axis*sign*offset[0]+forward*offset[1]+up*offset[2])
         mode = ('HIP' if is_hip else 'RELAXED') if settings.hand_pose == 'AUTO' else settings.hand_pose
         changed += shape_hand(rig, side, mode, fingers, rest)
-        total_shift = 0; deficit = 0
-        first_intrusion = None
-        for iteration in range(8):
-            if not is_hip:
-                horizontal = target-shoulder; horizontal.z = 0
-                maximum = reach*.985
-                if horizontal.length > maximum*.98:
-                    horizontal *= maximum*.98/horizontal.length
-                    target.x = shoulder.x+horizontal.x; target.y = shoulder.y+horizontal.y
-                target.z = max(target.z, shoulder.z-math.sqrt(max(maximum*maximum-horizontal.length_squared, 0)))
-            changed += place_hand(settings, side, target, pole, 1)
-            twist_forearm(rig, elbow, wrist, rest, inward)
-            orient_wrist(rig, wrist, rest, direction, inward)
-            deficit = 0
+        best = None; candidate_scores = []
+        # Clearance alone preferred a flat hand hovering in front of the waist.
+        # Compare a few modest palm-flexion angles by actual contact distances,
+        # while retaining collision clearance and a limit on wrist bending.
+        for pitch in ((0, 12, 24) if is_hip and tree else (0,)):
+            flex = Quaternion(direction.cross(inward).normalized(), math.radians(pitch))
+            candidate_direction, candidate_inward = flex @ direction, flex @ inward
+            goal = target.copy(); total_shift = 0; deficit = 0; first_intrusion = None
+            for iteration in range(8):
+                if not is_hip:
+                    horizontal = goal-shoulder; horizontal.z = 0
+                    maximum = reach*.985
+                    if horizontal.length > maximum*.98:
+                        horizontal *= maximum*.98/horizontal.length
+                        goal.x = shoulder.x+horizontal.x; goal.y = shoulder.y+horizontal.y
+                    goal.z = max(goal.z, shoulder.z-math.sqrt(max(maximum*maximum-horizontal.length_squared, 0)))
+                changed += place_hand(settings, side, goal, pole, 1)
+                twist_forearm(rig, elbow, wrist, rest, candidate_inward)
+                orient_wrist(rig, wrist, rest, candidate_direction, candidate_inward)
+                deficit = 0
+                if tree:
+                    for point in hand_points(side):
+                        hit = tree.ray_cast(point+outward*distance, -outward, distance*2)[0]
+                        if hit is not None:
+                            value = margin-(point-hit).dot(outward)
+                            if value > deficit:
+                                deficit = value
+                                if iteration == 0:
+                                    first_intrusion = {'hand_point': list(point), 'surface_point': list(hit), 'depth': value}
+                if deficit <= unit*.002:
+                    break
+                step = min(deficit+unit*.005, unit*.2)
+                goal += outward*step; total_shift += step
+            actual = rig.matrix_world @ wrist.head
+            middle = next((b for b, kind, segment in fingers if kind == 'middle' and segment == 1 and bone_side(b) == side), None)
+            center = actual.lerp(rig.matrix_world @ middle.head, .6) if middle else actual
+            nearest = tree.find_nearest(center) if tree else (None, None, None, None)
+            finger_distances = {}
             if tree:
-                for point in hand_points(side):
-                    hit = tree.ray_cast(point+outward*distance, -outward, distance*2)[0]
-                    if hit is not None:
-                        value = margin-(point-hit).dot(outward)
-                        if value > deficit:
-                            deficit = value
-                            if iteration == 0:
-                                first_intrusion = {'hand_point': list(point), 'surface_point': list(hit), 'depth': value}
-            if deficit <= unit*.002:
-                break
-            step = min(deficit+unit*.005, unit*.2)
-            target += outward*step; total_shift += step
-        actual = rig.matrix_world @ wrist.head
-        middle = next((b for b, kind, segment in fingers if kind == 'middle' and segment == 1 and bone_side(b) == side), None)
-        center = actual.lerp(rig.matrix_world @ middle.head, .6) if middle else actual
-        nearest = tree.find_nearest(center) if tree else (None, None, None, None)
-        contact_review = bool(is_hip and nearest[3] is not None and nearest[3] > unit*.2)
-        reports[side] = {'role': 'hip' if is_hip else 'relaxed', 'surface_available': bool(tree),
-                         'iterations': iteration+1, 'clearance_deficit': deficit, 'outward_shift': total_shift,
-                         'initial_intrusion': first_intrusion,
-                         'palm_center': list(center), 'palm_surface_distance': nearest[3],
-                         'contact_needs_review': contact_review,
-                         'target_error': (target-actual).length, 'wrist': list(actual),
-                         'status': 'fitted' if tree and deficit <= unit*.002 and (target-actual).length <= unit*.02 and not contact_review else 'needs_review'}
+                for kind in ('thumb', 'index', 'middle', 'ring', 'pinky'):
+                    chain = [(i, b) for b, k, i in fingers if k == kind and bone_side(b) == side]
+                    if chain:
+                        tip = rig.matrix_world @ max(chain, key=lambda item: item[0])[1].tail
+                        finger_distances[kind] = tree.find_nearest(tip)[3]
+            tip_distances = [d for k, d in finger_distances.items() if k != 'thumb' and d is not None]
+            mean_contact = sum(tip_distances)/len(tip_distances) if tip_distances else None
+            contact_review = bool(is_hip and nearest[3] is not None and (nearest[3] > unit*.2 or mean_contact is not None and mean_contact > unit*.1))
+            shape = hand_shape_metrics(rig, side, wrist, elbow, fingers)
+            shape_review = bool(is_hip and (
+                shape['thumb_open_degrees'] is None or not 10 <= shape['thumb_open_degrees'] <= 60 or
+                shape['thumb_tip_bend_degrees'] is None or not 8 <= shape['thumb_tip_bend_degrees'] <= 45 or
+                shape['wrist_bend_degrees'] is None or shape['wrist_bend_degrees'] > 70))
+            score = (mean_contact or 0)+.35*(nearest[3] or 0)+.15*max(tip_distances, default=0)
+            score += max(0, (shape['wrist_bend_degrees'] or 0)-65)*unit/90
+            score += max(0, deficit)*100+(goal-actual).length*10
+            report = {'role': 'hip' if is_hip else 'relaxed', 'surface_available': bool(tree),
+                      'iterations': iteration+1, 'clearance_deficit': deficit, 'outward_shift': total_shift,
+                      'initial_intrusion': first_intrusion, 'contact_pitch_degrees': pitch,
+                      'palm_center': list(center), 'palm_surface_distance': nearest[3],
+                      'finger_surface_distances': finger_distances, 'mean_finger_contact_distance': mean_contact,
+                      'contact_needs_review': contact_review, 'target_error': (goal-actual).length, 'wrist': list(actual),
+                      'hand_shape': shape, 'shape_needs_review': shape_review,
+                      'status': 'fitted' if tree and deficit <= unit*.002 and (goal-actual).length <= unit*.02 and not contact_review and not shape_review else 'needs_review'}
+            candidate_scores.append({'pitch': pitch, 'score': score, 'mean_finger_distance': mean_contact})
+            if best is None or score < best['score']:
+                best = {'score': score, 'report': report, 'bones': [(b, b.matrix_basis.copy()) for b in (arm, elbow, wrist)]}
+        for bone, matrix in best['bones']:
+            bone.matrix_basis = matrix
+        bpy.context.view_layer.update()
+        reports[side] = dict(best['report'], candidate_scores=candidate_scores)
         changed.append(wrist.name)
     if settings.pose_strength < 1:
         for bone in controlled:

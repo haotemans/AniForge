@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 8, 2),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 8, 3),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 39-shot LoRA dataset rendering',
     'category': 'Render',
@@ -178,7 +178,7 @@ class MLSettings(bpy.types.PropertyGroup):
     head_angles: FloatVectorProperty(name='头部俯仰 / 转向 / 歪头', size=3, default=(0, 0, 0), min=-45, max=45)
     hand_pose: EnumProperty(name='手型模板', items=[('AUTO', '跟随姿势', '', 5), ('KEEP', '保留当前手型', '', 0), ('RELAXED', '轻微放松', '', 1), ('FIST', '握拳', '', 2), ('POINT', '食指指向', '', 3), ('PEACE', '剪刀手', '', 4)], default='AUTO')
     hip_hand: EnumProperty(name='叉腰侧', items=[('LEFT', '左手叉腰', ''), ('RIGHT', '右手叉腰', '')], default='LEFT')
-    hip_clearance: FloatProperty(name='手部避让边距（肩宽比例）', default=.04, min=0, max=.3)
+    hip_clearance: FloatProperty(name='手部避让边距（肩宽比例）', default=.02, min=0, max=.3)
     hip_offset: FloatVectorProperty(name='叉腰手偏移（外 / 前 / 上）', size=3, default=(0, 0, 0), min=-1, max=1, description='以肩宽为单位；正值向外、向前、向上')
     free_hand_offset: FloatVectorProperty(name='垂手偏移（外 / 前 / 上）', size=3, default=(0, 0, 0), min=-1, max=1)
     preset_name: StringProperty(name='新预设名称', description='留空时覆盖当前选中的预设')

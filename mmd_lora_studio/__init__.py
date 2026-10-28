@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 8, 1),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
-    'description': 'MMD toon materials and 36-shot LoRA dataset rendering',
+    'description': 'MMD toon materials and 39-shot LoRA dataset rendering',
     'category': 'Render',
 }
 
@@ -185,8 +185,8 @@ class MLSettings(bpy.types.PropertyGroup):
     camera_target_offset: FloatVectorProperty(name='对焦偏移（身高比例）', size=3, default=(0, 0, 0), min=-.5, max=.5)
     camera_aspect: EnumProperty(name='画幅', items=[('SQUARE', '1:1 方形', ''), ('PORTRAIT', '3:4 竖幅', ''), ('LANDSCAPE', '4:3 横幅', '')], default='SQUARE')
     portrait_focus: EnumProperty(name='肖像范围', items=[('HEAD', '头肩（按脸部定位）', ''), ('FACE', '脸部特写', '')], default='HEAD')
-    dataset_variation: EnumProperty(name='36 张拍摄方案', items=[('CYCLE', '二次元姿势 / 表情 / 镜头联动', '每张使用编排的手势、表情、头部与镜头'), ('CURRENT', '当前姿势 / 表情 / 镜头参数', '沿用当前控制，仍拍四组各九个目标')], default='CYCLE')
-    plan_index: IntProperty(name='组内镜头', default=1, min=1, max=9)
+    dataset_variation: EnumProperty(name='39 张拍摄方案', items=[('CYCLE', '二次元姿势 / 表情 / 镜头联动', '每张使用编排的手势、表情、头部与镜头'), ('CURRENT', '当前姿势 / 表情 / 镜头参数', '沿用当前控制，按 12 肖像 + 其他各 9 个目标')], default='CYCLE')
+    plan_index: IntProperty(name='组内镜头', default=1, min=1, max=12)
     pose_folder: StringProperty(name='本地 VPD 目录', subtype='DIR_PATH')
     pose_import_scale: FloatProperty(name='VPD 导入比例', default=.08, min=.0001, max=10)
     pose_folder_report: StringProperty(default='')
@@ -492,7 +492,7 @@ class ML_OT_pose_folder(bpy.types.Operator):
             settings.pose_folder_report = json.dumps(report, ensure_ascii=False)
             text = bpy.data.texts.get('AniForge Local Pose Report') or bpy.data.texts.new('AniForge Local Pose Report')
             text.clear(); text.write(json.dumps(report, ensure_ascii=False, indent=2))
-            self.report({'INFO'}, f'已导入 {len(singles)} 个单人姿势，跳过 {len(entries)-len(singles)} 个双人部分；总输出仍为 36 张。')
+            self.report({'INFO'}, f'已导入 {len(singles)} 个单人姿势，跳过 {len(entries)-len(singles)} 个双人部分；总输出为 39 张。')
             return {'FINISHED'}
         except Exception as exc:
             settings.presets_json = before_library
@@ -526,7 +526,7 @@ class ML_OT_assign_shot(bpy.types.Operator):
                                                   'include_hands': hands, 'title': '自选·'+settings.pose[:76],
                                                   'support': 'seat' if settings.slot_seat or settings.pose in SEATED_POSES else 'floor'}
             store_presets(settings, library)
-            self.report({'INFO'}, '镜头预设已更新；总数保持 36 张。'); return {'FINISHED'}
+            self.report({'INFO'}, '镜头预设已更新；总数保持 39 张。'); return {'FINISHED'}
         except Exception as exc:
             self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
 
@@ -561,13 +561,13 @@ class ML_OT_shot_plan(bpy.types.Operator):
             settings = context.scene.ml_settings
             plan = dataset_plan(settings)
             if self.report_only:
-                text = bpy.data.texts.get('AniForge 36 Shot Plan') or bpy.data.texts.new('AniForge 36 Shot Plan')
+                text = bpy.data.texts.get('AniForge 39 Shot Plan') or bpy.data.texts.new('AniForge 39 Shot Plan')
                 text.clear(); text.write(json.dumps({'shots': plan, 'coverage': dataset_coverage(plan), 'total': len(plan)}, ensure_ascii=False, indent=2))
-                self.report({'INFO'}, '36 张拍摄清单已写入文本编辑器，没有渲染图片。')
+                self.report({'INFO'}, '39 张拍摄清单已写入文本编辑器，没有渲染图片。')
             else:
                 shot = next(s for s in plan if s['group'] == settings.preview_group and s['index'] == settings.plan_index)
                 update_preview_camera(context, settings, model_meshes(settings), shot)
-                self.report({'INFO'}, f'{shot["index"]}/9 {shot["title"]}：姿势、表情和镜头已联动，没有渲染图片。')
+                self.report({'INFO'}, f'{shot["index"]}/{len([s for s in plan if s["group"] == shot["group"]])} {shot["title"]}：姿势、表情和镜头已联动，没有渲染图片。')
             return {'FINISHED'}
         except Exception as exc:
             self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
@@ -670,8 +670,8 @@ class RenderSession:
             lamp.data.energy = energy * h * h / 4; lamp.data.shape = 'DISK'; lamp.data.size = size * h
             aim(lamp, center)
         self.world = bpy.data.worlds.new('LoRA Background'); self.world.use_nodes = True
-        self.world.node_tree.nodes['Background'].inputs[0].default_value = (0.16, 0.16, 0.16, 1)
-        self.world.node_tree.nodes['Background'].inputs[1].default_value = 0.4
+        self.world.node_tree.nodes['Background'].inputs[0].default_value = (1.0, 1.0, 1.0, 1)
+        self.world.node_tree.nodes['Background'].inputs[1].default_value = 1.0
         self.scene.world = self.world
         r = self.scene.render; r.engine = eevee_engine(self.scene)
         r.resolution_x, r.resolution_y = resolution(self.settings); r.resolution_percentage = 100
@@ -960,7 +960,12 @@ class ML_PT_panel(bpy.types.Panel):
             col.prop(settings, 'pose'); col.prop(settings, 'expression')
             col.operator('ml.preview', text='单张预览（当前选择）')
             col.separator(); col.prop(settings, 'dataset_variation')
-            box = col.box(); box.label(text='肖像 9 · 半身 9 · 全身 9 · 服装 9')
+            box = col.box(); box.label(text='肖像 12 · 半身 9 · 全身 9 · 服装 9')
+            # Index bounds depend on the selected shot group; reset invalid
+            # indices when switching back from portraits to a nine-shot group.
+            group_count = len([s for s in dataset_plan(settings) if s['group'] == settings.preview_group])
+            if settings.plan_index > group_count:
+                settings.plan_index = group_count
             box.prop(settings, 'plan_index')
             shot = next(s for s in dataset_plan(settings) if s['group'] == settings.preview_group and s['index'] == settings.plan_index)
             box.label(text=shot['title'])
@@ -970,8 +975,8 @@ class ML_PT_panel(bpy.types.Panel):
             box.operator('ml.assign_shot_pose', text='恢复此镜头默认姿势').reset = True
             box.operator('ml.shot_plan')
             box.operator('ml.preview', text='渲染此镜头 1 张').use_plan_shot = True
-            box.operator('ml.shot_plan', text='查看 36 张拍摄清单').report_only = True
-            col.operator('ml.render_dataset', text='生成角色数据集：共 36 张 + 标签', icon='RENDER_STILL').test_only = False
+            box.operator('ml.shot_plan', text='查看 39 张拍摄清单').report_only = True
+            col.operator('ml.render_dataset', text='生成角色数据集：共 39 张 + 标签', icon='RENDER_STILL').test_only = False
             col.prop(settings, 'developer_tools')
             if settings.developer_tools:
                 col.operator('ml.render_dataset', text='开发检查：正 / 侧 / 背').test_only = True

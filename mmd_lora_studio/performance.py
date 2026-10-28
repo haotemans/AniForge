@@ -7,7 +7,7 @@ import bpy
 from mathutils import Matrix, Quaternion, Vector
 
 from .core import (BONES, MORPHS, EXPRESSION_CHANNELS, EXPRESSION_LABELS, POSE_LABELS,
-                   POSE_DIRECTIONS, POSE_BODY, POSE_HEAD, POSE_HANDS,
+                   POSE_DIRECTIONS, POSE_BODY, POSE_HEAD, POSE_HANDS, POSE_LEGS, SEATED_POSES,
                    normalized_name, empty_library, validate_library)
 
 _ENUM_CACHE = {}
@@ -167,12 +167,85 @@ def place_hand(settings, side_name, target, pole, strength):
     return [upper.name, lower.name]
 
 
+SEATED_STATE = 'aniforge_seated_state'
+
+
+def restore_seated(rig):
+    state = json.loads(rig.get(SEATED_STATE, '{}'))
+    for name, values in state.get('bones', {}).items():
+        if name in rig.pose.bones:
+            rig.pose.bones[name].matrix_basis = Matrix(values)
+    for name, constraints in state.get('constraints', {}).items():
+        bone = rig.pose.bones.get(name)
+        if bone:
+            for cname, mute in constraints.items():
+                if cname in bone.constraints:
+                    bone.constraints[cname].mute = mute
+    if SEATED_STATE in rig:
+        del rig[SEATED_STATE]
+    bpy.context.view_layer.update()
+
+
+def begin_leg_fk(settings):
+    rig = settings.armature
+    keys = ('center', 'left_leg', 'right_leg', 'left_knee', 'right_knee', 'left_ankle', 'right_ankle')
+    bones = {key: find_bone(rig, key, settings) for key in keys}
+    missing = [key for key, bone in bones.items() if bone is None]
+    if missing:
+        raise ValueError('坐姿缺少骨骼：' + ', '.join(missing) + '；请在 bone_map 中指定对应骨骼。')
+    state = {'bones': {b.name: [list(row) for row in b.matrix_basis] for b in bones.values()}, 'constraints': {}}
+    # MMD rigs may place IK on the knee, ankle or an auxiliary deform chain.
+    leg_names = {b.name for key, b in bones.items() if key != 'center'}
+    for bone in rig.pose.bones:
+        for constraint in bone.constraints:
+            if constraint.type == 'IK':
+                chain = [bone] + list(bone.parent_recursive[:max(0, constraint.chain_count-1)]) if constraint.chain_count else [bone]+list(bone.parent_recursive)
+                if leg_names & {b.name for b in chain}:
+                    state['constraints'].setdefault(bone.name, {})[constraint.name] = constraint.mute
+                    constraint.mute = True
+    rig[SEATED_STATE] = json.dumps(state)
+    return bones
+
+
+def apply_seated(settings, name, side, forward, to_rig):
+    rig = settings.armature
+    bones = begin_leg_fk(settings)
+    strength = settings.pose_strength
+    for key, bone in bones.items():
+        if key != 'center':
+            bone.rotation_mode = 'QUATERNION'; bone.rotation_quaternion = Quaternion()
+    bpy.context.view_layer.update()
+    # Ground follows the lowest rest foot endpoint; the support is derived from
+    # actual limb lengths, so child/adult MMD proportions do not share a height.
+    ground = min((rig.matrix_world @ b.tail).z for key, b in bones.items() if 'ankle' in key)
+    for key, direction in POSE_LEGS[name].items():
+        bone = bones[key]
+        x, y, z = direction
+        desired = (to_rig @ (side*x+forward*y+Vector((0, 0, z)))).normalized()
+        matrix = bone.matrix.copy()
+        current = matrix.to_quaternion() @ Vector((0, 1, 0))
+        swing = Quaternion().slerp(current.rotation_difference(desired), strength)
+        bone.matrix = Matrix.LocRotScale(matrix.translation, swing @ matrix.to_quaternion(), matrix.to_scale())
+        bpy.context.view_layer.update()
+    floor_now = min((rig.matrix_world @ b.tail).z for key, b in bones.items() if 'ankle' in key)
+    center = bones['center']
+    matrix = center.matrix.copy()
+    matrix.translation += to_rig @ Vector((0, 0, ground-floor_now))
+    center.matrix = matrix
+    bpy.context.view_layer.update()
+    return [b.name for b in bones.values()]
+
+
 def pose_apply(settings, name):
     rig = settings.armature
+    restore_seated(rig)
     custom = custom_presets(settings)['poses'].get(name)
     changed = []
     strength = settings.pose_strength
     if custom is not None:
+        if any((bone := find_bone(rig, key, settings)) and bone.name in custom and Matrix(custom[bone.name]).to_quaternion().angle > .5
+               for key in ('left_leg', 'right_leg')):
+            begin_leg_fk(settings)
         for bone_name, values in custom.items():
             bone = rig.pose.bones.get(bone_name)
             if bone:
@@ -195,6 +268,8 @@ def pose_apply(settings, name):
         side = Vector((math.cos(front), math.sin(front), 0))
         forward = Vector((math.sin(front), -math.cos(front), 0))
         to_rig = rig.matrix_world.to_3x3().inverted()
+        if name in SEATED_POSES:
+            changed += apply_seated(settings, name, side, forward, to_rig)
         for key, direction in POSE_DIRECTIONS.get(name, {}).items():
             bone = find_bone(rig, key, settings)
             if bone:

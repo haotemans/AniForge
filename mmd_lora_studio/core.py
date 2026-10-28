@@ -36,6 +36,13 @@ BONES = {
     'right_wrist': ('右手首', 'wrist_R', 'hand.R', 'RightHand'),
     'left_shoulder': ('左肩', 'shoulder_L', 'shoulder.L', 'LeftShoulder'),
     'right_shoulder': ('右肩', 'shoulder_R', 'shoulder.R', 'RightShoulder'),
+    'center': ('センター', 'center', 'Center', 'root', 'Root'),
+    'left_leg': ('左足', 'leg_L', 'thigh.L', 'UpperLeg_L', 'LeftUpLeg'),
+    'right_leg': ('右足', 'leg_R', 'thigh.R', 'UpperLeg_R', 'RightUpLeg'),
+    'left_knee': ('左ひざ', '左膝', 'knee_L', 'shin.L', 'LeftLeg'),
+    'right_knee': ('右ひざ', '右膝', 'knee_R', 'shin.R', 'RightLeg'),
+    'left_ankle': ('左足首', 'ankle_L', 'foot.L', 'LeftFoot'),
+    'right_ankle': ('右足首', 'ankle_R', 'foot.R', 'RightFoot'),
 }
 # Local XYZ Euler offsets, intended as starting points for standard MMD rigs.
 POSE_ROTATIONS = {
@@ -79,6 +86,18 @@ POSE_DIRECTIONS = {
                 'left_elbow': (-.35, .5, -.7), 'right_elbow': (.35, .4, -.8)},
     'arms_clear': {'left_arm': (.6, .02, -.8), 'right_arm': (-.6, .02, -.8),
                    'left_elbow': (.3, .06, -1), 'right_elbow': (-.3, .06, -1)},
+    'sit_chair': {'left_arm': (.12, .18, -1), 'right_arm': (-.12, .18, -1),
+                  'left_elbow': (-.12, .8, -.35), 'right_elbow': (.12, .8, -.35)},
+    'sit_side': {'left_arm': (.15, .2, -1), 'right_arm': (-.15, .2, -1),
+                 'left_elbow': (-.2, .8, -.2), 'right_elbow': (.2, .8, -.2)},
+}
+
+SEATED_POSES = {'sit_chair', 'sit_side'}
+POSE_LEGS = {
+    'sit_chair': {'left_leg': (.04, 1, -.04), 'right_leg': (-.04, 1, -.04),
+                  'left_knee': (0, .08, -1), 'right_knee': (0, .08, -1)},
+    'sit_side': {'left_leg': (.25, 1, -.06), 'right_leg': (.22, 1, -.06),
+                 'left_knee': (.18, .06, -1), 'right_knee': (.18, .06, -1)},
 }
 
 # Mild character-space rotations: pitch, yaw, roll. Legs/foot IK are untouched.
@@ -95,6 +114,8 @@ POSE_BODY = {
     'hands_behind': {'upper_body': (4, 0, -3)},
     'elegant': {'upper_body': (0, -9, -3), 'lower_body': (0, 4, 2)},
     'presenting': {'upper_body': (0, -5, 2)},
+    'sit_chair': {'upper_body': (3, 0, 0)},
+    'sit_side': {'upper_body': (2, -8, 3)},
 }
 POSE_HEAD = {'peace_face': (0, 0, -9), 'thinking': (3, -6, 6), 'shy': (7, 0, 7),
              'cheer': (-4, 0, -4), 'cat_paws': (2, 0, -8), 'salute': (-2, 0, 3),
@@ -111,7 +132,8 @@ EXPRESSION_LABELS = {'neutral': '中性', 'smile': '微笑', 'happy': '开心', 
 POSE_LABELS = {'relaxed': '自然站姿', 'hand_hip': '单手叉腰', 'wave': '招手', 'open_arms': '张开双臂',
               'hands_front': '双手身前', 'presenting': '单手展示', 'peace_face': '脸侧剪刀手',
               'thinking': '托腮思考', 'shy': '害羞收手', 'cheer': '元气举手', 'cat_paws': '猫爪手势',
-              'salute': '俏皮敬礼', 'hands_behind': '背手前倾', 'elegant': '侧身立绘', 'arms_clear': '服装展示'}
+              'salute': '俏皮敬礼', 'hands_behind': '背手前倾', 'elegant': '侧身立绘', 'arms_clear': '服装展示',
+              'sit_chair': '端坐', 'sit_side': '侧坐'}
 EXPRESSION_CHANNELS = {
     'smile': [(MORPHS['smile'][0], .7)],
     'happy': [(('口角上げ', 'にやり', 'smile', 'jawOpen_Happy_01_CLO'), .8),
@@ -218,13 +240,13 @@ SHOT_PLANS = {
         ('猫爪卖萌', 'cat_paws', 'happy', 8, 4, (2, 2, -7), 'UPPER', ('left_wrist', 'right_wrist')),
         ('俏皮敬礼', 'salute', 'smile', -25, 0, (-2, -8, 3), 'UPPER', ('right_wrist',)),
         ('单手介绍', 'presenting', 'neutral', 32, 0, (0, 10, 0), 'UPPER', ('right_wrist',)),
-        ('含蓄背手', 'hands_behind', 'smile', -32, 4, (2, -10, 5), 'UPPER', ()),
+        ('侧坐半身', 'sit_side', 'smile', -32, 4, (2, -10, 5), 'UPPER', ()),
     ),
     'full_body': (
         ('正面立绘', 'relaxed', 'neutral', 0, 0, (0, 0, 0), 'FULL', ()),
-        ('侧身立绘', 'elegant', 'smile', -30, 0, (0, -10, -5), 'FULL', ()),
+        ('端坐全身', 'sit_chair', 'smile', -25, 3, (0, -8, -3), 'FULL', ()),
         ('叉腰立绘', 'hand_hip', 'smile', 30, -2, (0, 10, -4), 'FULL', ()),
-        ('比耶立绘', 'peace_face', 'wink', 15, 1, (0, 5, -8), 'FULL', ()),
+        ('侧坐全身', 'sit_side', 'neutral', 35, 2, (0, 10, -4), 'FULL', ()),
         ('元气举手', 'cheer', 'happy', -15, -2, (-4, -4, -4), 'FULL', ()),
         ('张臂立绘', 'open_arms', 'smile', 22, 0, (0, 7, 3), 'FULL', ()),
         ('背手立绘', 'hands_behind', 'smile', -40, 1, (2, -12, 5), 'FULL', ()),
@@ -240,7 +262,7 @@ SHOT_PLANS = {
         ('下装与侧饰', 'arms_clear', 'neutral', -45, 0, (0, 0, 0), 'HIPS', ()),
         ('下摆与腿部', 'arms_clear', 'neutral', 0, -2, (0, 0, 0), 'HEM', ()),
         ('背部上装', 'arms_clear', 'neutral', 180, 0, (0, 0, 0), 'BACK_UPPER', ()),
-        ('背面腰饰', 'arms_clear', 'neutral', 155, 2, (0, 0, 0), 'BACK_WAIST', ()),
+        ('鞋靴与足饰', 'arms_clear', 'neutral', 25, 4, (0, 0, 0), 'SHOES', ()),
     ),
 }
 
@@ -251,6 +273,7 @@ def recipe():
         for index, row in enumerate(SHOT_PLANS[group], 1):
             title, pose, expression, azimuth, elevation, head, focus, hands = row
             shots.append(dict(group=group, index=index, title=title, pose=pose, expression=expression,
+                              support='seat' if pose in {'sit_chair', 'sit_side'} else 'floor',
                               azimuth=azimuth, elevation=elevation, focus=focus, include_hands=list(hands),
                               performance={'head_angles': list(head), 'hand_pose': 'AUTO', 'pose_strength': 1,
                                            'expression_strength': .85 if expression != 'neutral' else 1},
@@ -264,7 +287,18 @@ def recipe():
 def current_recipe(settings):
     """Keep the 9+9+9+9 shot targets, with the user's own performance/lens."""
     return [dict({key: value for key, value in shot.items() if key not in {'camera', 'performance', 'include_hands', 'elevation'}},
-                 pose=settings.pose, expression=settings.expression) for shot in recipe()]
+                 pose=settings.pose, expression=settings.expression,
+                 support='seat' if settings.pose in {'sit_chair', 'sit_side'} else 'floor') for shot in recipe()]
+
+
+def dataset_coverage(shots):
+    """Planned coverage, not a claim that pixels/occlusion have been verified."""
+    return {'total': len(shots), 'per_group': {group: sum(s['group'] == group for s in shots) for group in GROUPS},
+            'poses': sorted({s['pose'] for s in shots}), 'expressions': sorted({s['expression'] for s in shots}),
+            'seated_photos': sum(s['pose'] in SEATED_POSES for s in shots),
+            'full_body_angles': [s['azimuth'] for s in shots if s['group'] == 'full_body'],
+            'clothing_regions': [s.get('focus', '') for s in shots if s['group'] == 'outfit_detail'],
+            'scope': 'planned; review actual occlusion, deformation and captions before training'}
 
 
 class ShotSettings:

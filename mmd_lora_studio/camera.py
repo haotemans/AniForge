@@ -80,6 +80,7 @@ def configure_camera(context, settings, meshes, camera, shot):
         return evaluated_rig.matrix_world @ evaluated_rig.pose.bones[bone.name].head if bone else None
     head = joint('head')
     torso = joint('upper_body')
+    hips = joint('lower_body')
     body_height = max((head.z-lo.z) + height*.07, height*.5) if head else height
     body_center = torso if torso is not None else center
     # Approximate anatomical zones. These locate clothing on the wearer;
@@ -87,7 +88,7 @@ def configure_camera(context, settings, meshes, camera, shot):
     regions = {'COLLAR': (.82, .22, 0), 'CHEST': (.72, .30, 0),
                'SLEEVE_LEFT': (.68, .42, .22), 'SLEEVE_RIGHT': (.68, .42, -.22),
                'WAIST': (.54, .28, 0), 'HIPS': (.43, .34, 0), 'HEM': (.25, .47, 0),
-               'BACK_UPPER': (.73, .39, 0), 'BACK_WAIST': (.5, .34, 0)}
+               'BACK_UPPER': (.73, .39, 0), 'BACK_WAIST': (.5, .34, 0), 'SHOES': (.08, .28, 0)}
     if group == 'full_body':
         points = box_points(lo, hi)
         target = center.copy()
@@ -100,10 +101,39 @@ def configure_camera(context, settings, meshes, camera, shot):
         roi_lo = target - Vector((size*aspect*.5, (face_hi.y-face_lo.y)*.5, size*.5))
         roi_hi = target + Vector((size*aspect*.5, (face_hi.y-face_lo.y)*.5, size*.5))
         points = box_points(roi_lo, roi_hi)
+    elif group == 'half_body' and head is not None and hips is not None:
+        top = head + Vector((0, 0, body_height*.15))
+        bottom = hips - Vector((0, 0, body_height*.05))
+        target = (top+bottom)*.5
+        size = max(top.z-bottom.z, body_height*.35)
+        half = Vector((size*aspect*.5, body_height*.18, size*.5))
+        points = box_points(target-half, target+half)
     elif group == 'outfit_detail' and focus in regions:
         vertical, fraction, lateral = regions[focus]
         target = Vector((body_center.x, body_center.y, lo.z + body_height*vertical)) + side * body_height*lateral
         size = body_height*fraction
+        if hips is not None and head is not None:
+            chest = joint('upper_body2')
+            chest = chest if chest is not None else head.lerp(hips, .4)
+            anchors = {'COLLAR': head.lerp(chest, .2), 'CHEST': chest.lerp(hips, .25),
+                       'WAIST': hips.lerp(chest, .3), 'HIPS': hips-Vector((0, 0, body_height*.06)),
+                       'BACK_UPPER': chest.lerp(hips, .2), 'BACK_WAIST': hips.lerp(chest, .25)}
+            if focus in anchors:
+                target = anchors[focus].copy()
+            if focus.startswith('SLEEVE_'):
+                arm = joint('left_arm' if focus == 'SLEEVE_LEFT' else 'right_arm')
+                wrist = joint('left_wrist' if focus == 'SLEEVE_LEFT' else 'right_wrist')
+                if arm is not None and wrist is not None:
+                    target = arm.lerp(wrist, .5)
+                    size = max(size, (wrist-arm).length*1.25)
+            if focus == 'HEM':
+                knees = [p for key in ('left_knee', 'right_knee') if (p := joint(key)) is not None]
+                if knees:
+                    target = hips.lerp(sum(knees, Vector())/len(knees), .8)
+            if focus == 'SHOES':
+                ankles = [p for key in ('left_ankle', 'right_ankle') if (p := joint(key)) is not None]
+                if ankles:
+                    target = sum(ankles, Vector())/len(ankles)
         half = Vector((size*aspect*.5, body_height*.16, size*.5))
         points = box_points(target-half, target+half)
     else:

@@ -21,8 +21,12 @@ scene = bpy.context.scene; settings = scene.ml_settings
 bpy.ops.object.armature_add()
 rig = bpy.context.object; rig.name = 'PerformanceRig'
 bpy.ops.object.mode_set(mode='EDIT')
-rig.data.edit_bones[0].name = '下半身'
-for name, head, tail, parent in [('上半身', (0, 0, 1), (0, 0, 1.4), '下半身'),
+rig.data.edit_bones[0].name = 'センター'
+for name, head, tail, parent in [('下半身', (0, 0, 1), (0, 0, 1.1), 'センター'),
+        ('左足', (.12, 0, 1), (.12, 0, .55), '下半身'), ('右足', (-.12, 0, 1), (-.12, 0, .55), '下半身'),
+        ('左ひざ', (.12, 0, .55), (.12, 0, .1), '左足'), ('右ひざ', (-.12, 0, .55), (-.12, 0, .1), '右足'),
+        ('左足首', (.12, 0, .1), (.12, -.15, .05), '左ひざ'), ('右足首', (-.12, 0, .1), (-.12, -.15, .05), '右ひざ'),
+        ('上半身', (0, 0, 1), (0, 0, 1.4), '下半身'),
         ('上半身2', (0, 0, 1.4), (0, 0, 1.6), '上半身'),
         ('頭', (0, 0, 1.6), (0, 0, 1.9), '上半身2'),
         ('左腕', (.2, 0, 1.4), (.65, 0, 1.4), '上半身2'), ('右腕', (-.2, 0, 1.4), (-.65, 0, 1.4), '上半身2'),
@@ -33,6 +37,7 @@ for name, offset in [('左人指1', 0), ('左中指1', .04), ('左薬指1', .08)
     bone = rig.data.edit_bones.new(name); bone.head = (1.1, offset, 1.4); bone.tail = (1.2, offset, 1.4); bone.parent = rig.data.edit_bones['左手首']
 bpy.ops.object.mode_set(mode='OBJECT')
 settings.armature = rig
+ik = rig.pose.bones['左ひざ'].constraints.new('IK'); ik.name = 'Leg IK restore check'; ik.chain_count = 2
 
 def cube(name, center, scale):
     bpy.ops.mesh.primitive_cube_add(size=1, location=center)
@@ -64,6 +69,13 @@ settings.pose_strength = 0
 addon.pose_apply(settings, 'wave')
 assert rig.pose.bones['左腕'].rotation_quaternion.angle < .0001
 settings.pose_strength = 1
+addon.pose_apply(settings, 'sit_chair')
+assert ik.mute
+assert rig.pose.bones['センター'].location.length > .1
+thigh = rig.pose.bones['左足']
+assert abs((thigh.tail-thigh.head).normalized().z) < .2
+addon.pose_apply(settings, 'relaxed')
+assert not ik.mute and rig.pose.bones['センター'].location.length < .0001
 settings.head_angles = (8, 12, -4)
 addon.pose_apply(settings, 'relaxed')
 head_before = rig.pose.bones['頭'].matrix_basis.copy()
@@ -172,5 +184,5 @@ with tempfile.TemporaryDirectory() as folder:
     assert all(abs(bone.matrix_basis[i][j]-matrix[i][j]) < .0001 and bone.rotation_mode == mode for bone, mode, matrix in before_pose for i in range(4) for j in range(4))
     assert all(abs(key.value-value) < .0001 for key, value in before_shapes)
 
-print('ANIFORGE_PERFORMANCE_CAMERA_OK: 15 deterministic poses, named JSON library, 72 camera fits + 36 linked shots; no renders')
+print('ANIFORGE_PERFORMANCE_CAMERA_OK: 17 deterministic poses, seated leg IK restore, 72 camera fits + 36 linked shots; no renders')
 addon.unregister()

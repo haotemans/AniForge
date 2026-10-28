@@ -37,7 +37,8 @@ class RecipeTests(unittest.TestCase):
         self.assertTrue(all(s['pose'] == 'arms_clear' and s['expression'] == 'neutral' for s in outfit))
         self.assertTrue({90, 180} <= {s['azimuth'] for s in shots if s['group'] == 'full_body'})
         self.assertTrue(any(s['include_hands'] for s in portrait))
-        self.assertEqual(len(core.POSE_LABELS), 15)
+        self.assertEqual(len(core.POSE_LABELS), 17)
+        self.assertTrue(core.SEATED_POSES <= {s['pose'] for s in shots if s['group'] == 'full_body'})
         self.assertEqual(set(core.POSE_LABELS), set(core.POSE_DIRECTIONS))
         # Every request gets its own nested controls.
         shots[0]['camera']['camera_lens'] = 25
@@ -54,6 +55,15 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(settings.camera_lens, 40)
         self.assertEqual(effective.hand_pose, 'AUTO')
         self.assertEqual(settings.hand_pose, 'KEEP')
+
+    def test_36_photos_cover_character_information_without_pose_triplication(self):
+        report = core.dataset_coverage(core.recipe())
+        self.assertEqual(report['total'], 36)
+        self.assertEqual(set(report['per_group'].values()), {9})
+        self.assertEqual(report['seated_photos'], 3)
+        self.assertTrue({90, 180} <= set(report['full_body_angles']))
+        self.assertIn('SHOES', report['clothing_regions'])
+        self.assertEqual(len(report['clothing_regions']), 9)
 
     def test_three_views_keep_the_selected_performance(self):
         shots = core.three_view_recipe('half_body', 'custom pose', 'custom smile')

@@ -11,7 +11,7 @@ import bpy
 from mathutils import Matrix, Vector
 from bpy_extras.object_utils import world_to_camera_view
 import mmd_lora_studio as addon
-from mmd_lora_studio.core import POSE_LABELS, EXPRESSION_LABELS, write_json
+from mmd_lora_studio.core import POSE_LABELS, EXPRESSION_LABELS, ShotSettings, recipe, write_json
 from mmd_lora_studio.camera import configure_camera
 
 parser = argparse.ArgumentParser()
@@ -60,6 +60,20 @@ for projection in ('ORTHO', 'PERSP'):
             projected = [world_to_camera_view(bpy.context.scene, camera, Vector(p)) for p in result['roi']]
             assert all(-.0001 <= p.x <= 1.0001 and -.0001 <= p.y <= 1.0001 and p.z > 0 for p in projected), (args.game, projection, group, angle)
             report['camera_fits'] += 1
+
+report['storyboard'] = []
+for shot in recipe():
+    reset()
+    effective = ShotSettings(settings, shot)
+    mapped = addon.pose_apply(effective, shot['pose'])
+    shapes_used = addon.expression_apply(effective, meshes, shot['expression'])
+    result = configure_camera(bpy.context, settings, meshes, camera, shot)
+    projected = [world_to_camera_view(bpy.context.scene, camera, Vector(p)) for p in result['roi']]
+    assert all(-.0001 <= p.x <= 1.0001 and -.0001 <= p.y <= 1.0001 and p.z > 0 for p in projected), (args.game, shot['title'])
+    report['storyboard'].append({'group': shot['group'], 'index': shot['index'], 'title': shot['title'],
+                                 'focus': result['focus'], 'mapped_bones': len(mapped), 'mapped_keys': len(shapes_used),
+                                 'included_hands': result['included_hands'], 'target': result['target']})
+assert len(report['storyboard']) == 36
 
 if args.game == 'WUWA':
     head = addon.find_bone(settings.armature, 'head')

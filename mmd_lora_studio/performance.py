@@ -7,7 +7,8 @@ import bpy
 from mathutils import Matrix, Quaternion, Vector
 
 from .core import (BONES, MORPHS, EXPRESSION_CHANNELS, EXPRESSION_LABELS, POSE_LABELS,
-                   POSE_DIRECTIONS, normalized_name, empty_library, validate_library)
+                   POSE_DIRECTIONS, POSE_BODY, POSE_HEAD, POSE_HANDS,
+                   normalized_name, empty_library, validate_library)
 
 _ENUM_CACHE = {}
 
@@ -113,6 +114,59 @@ def finger_bones(rig):
                 break
 
 
+def bone_side(bone):
+    names = [normalized_name(n) for n in aliases(bone)]
+    for side, japanese, tokens in [('left', '左', ('left', '_l', '.l', ' l')),
+                                   ('right', '右', ('right', '_r', '.r', ' r'))]:
+        if any(japanese in n or any(token in n for token in tokens) for n in names):
+            return side
+    return None
+
+
+def rotate_character(bone, angles, rig, front, strength):
+    pitch, yaw, roll = (math.radians(v) * strength for v in angles)
+    axes = [Vector((math.cos(front), math.sin(front), 0)), Vector((0, 0, 1)),
+            Vector((math.sin(front), -math.cos(front), 0))]
+    to_rig = rig.matrix_world.to_quaternion().inverted()
+    delta = Quaternion()
+    for axis, angle in zip(axes, (pitch, yaw, roll)):
+        delta = Quaternion(to_rig @ axis, angle) @ delta
+    matrix = bone.matrix.copy()
+    bone.matrix = Matrix.LocRotScale(matrix.translation, delta @ matrix.to_quaternion(), matrix.to_scale())
+    bpy.context.view_layer.update()
+
+
+def place_hand(settings, side_name, target, pole, strength):
+    """Two-bone swing in rig space, without adding constraints or Actions."""
+    rig = settings.armature
+    upper, lower, wrist = [find_bone(rig, side_name + '_' + key, settings) for key in ('arm', 'elbow', 'wrist')]
+    if not all((upper, lower, wrist)):
+        return []
+    inv = rig.matrix_world.inverted()
+    target = inv @ target
+    pole = inv.to_3x3() @ pole
+    origin = upper.head.copy()
+    first, second = (lower.head-origin).length, (wrist.head-lower.head).length
+    delta = target-origin
+    if min(first, second, delta.length) < .00001:
+        return []
+    direction = delta.normalized()
+    distance = min(max(delta.length, abs(first-second)+.00001), first+second-.00001)
+    bend = pole-direction*pole.dot(direction)
+    if bend.length < .00001:
+        return []
+    along = (first*first-second*second+distance*distance)/(2*distance)
+    elbow_target = origin + direction*along + bend.normalized()*math.sqrt(max(0, first*first-along*along))
+    for bone, goal in ((upper, elbow_target), (lower, origin+direction*distance)):
+        matrix = bone.matrix.copy()
+        current = matrix.to_quaternion() @ Vector((0, 1, 0))
+        desired = (goal-matrix.translation).normalized()
+        swing = Quaternion().slerp(current.rotation_difference(desired), strength)
+        bone.matrix = Matrix.LocRotScale(matrix.translation, swing @ matrix.to_quaternion(), matrix.to_scale())
+        bpy.context.view_layer.update()
+    return [upper.name, lower.name]
+
+
 def pose_apply(settings, name):
     rig = settings.armature
     custom = custom_presets(settings)['poses'].get(name)
@@ -125,7 +179,7 @@ def pose_apply(settings, name):
                 bone.matrix_basis = blend_basis(Matrix(values), strength)
                 changed.append(bone.name)
     else:
-        managed = {key for values in POSE_DIRECTIONS.values() for key in values} | {'head'}
+        managed = {key for values in POSE_DIRECTIONS.values() for key in values} | {'head', 'upper_body', 'upper_body2', 'lower_body'}
         for key in managed:
             bone = find_bone(rig, key, settings)
             if bone:
@@ -133,6 +187,11 @@ def pose_apply(settings, name):
                 bone.rotation_quaternion = Quaternion()
         bpy.context.view_layer.update()
         front = math.radians(settings.front)
+        for key, angles in POSE_BODY.get(name, {}).items():
+            bone = find_bone(rig, key, settings)
+            if bone:
+                rotate_character(bone, angles, rig, front, strength)
+                changed.append(bone.name)
         side = Vector((math.cos(front), math.sin(front), 0))
         forward = Vector((math.sin(front), -math.cos(front), 0))
         to_rig = rig.matrix_world.to_3x3().inverted()
@@ -147,28 +206,56 @@ def pose_apply(settings, name):
                 bone.matrix = Matrix.LocRotScale(matrix.translation, swing @ matrix.to_quaternion(), matrix.to_scale())
                 bpy.context.view_layer.update()
                 changed.append(bone.name)
+        # Face gestures need a hand target scaled to this rig, rather than
+        # assuming that every character has the same arm/head proportions.
+        head = find_bone(rig, 'head', settings)
+        left, right = find_bone(rig, 'left_arm', settings), find_bone(rig, 'right_arm', settings)
+        if head and left and right:
+            head_point = rig.matrix_world @ head.head
+            shoulder_span = (rig.matrix_world.to_3x3() @ (left.head-right.head)).length
+            unit = max(shoulder_span, .0001)
+            # Offsets are measured in shoulder spans from the head joint.
+            targets = {'peace_face': {'right': (-.85, .45, .2)},
+                       'thinking': {'right': (-.12, .65, -.15)},
+                       'salute': {'right': (-.6, .35, .5)},
+                       'shy': {'left': (.28, .65, -.7), 'right': (-.28, .65, -.7)},
+                       'cat_paws': {'left': (.65, .7, -.55), 'right': (-.65, .7, -.55)}}
+            for hand, (x, y, z) in targets.get(name, {}).items():
+                target = head_point + unit*(side*x+forward*y+Vector((0, 0, z)))
+                pole = side*(1 if hand == 'left' else -1) + Vector((0, 0, -1)) + forward*.2
+                changed += place_hand(settings, hand, target, pole, strength)
     if settings.hand_pose != 'KEEP':
-        for bone, finger, segment in finger_bones(rig):
-            extended = settings.hand_pose == 'POINT' and finger == 'index' or settings.hand_pose == 'PEACE' and finger in {'index', 'middle'}
-            angle = 0 if extended else (12 if settings.hand_pose == 'RELAXED' else 65)
+        fingers = list(finger_bones(rig))
+        for bone, finger, segment in fingers:
+            mode = settings.hand_pose
+            if mode == 'AUTO':
+                mode = POSE_HANDS.get(name, {}).get(bone_side(bone), 'RELAXED')
+            extended = mode == 'OPEN' or mode == 'POINT' and finger == 'index' or mode == 'PEACE' and finger in {'index', 'middle'}
+            angle = 0 if extended else (12 if mode == 'RELAXED' else 65)
             if finger == 'thumb':
                 angle *= .35
             if segment == 0:
                 angle = 0
             bone.rotation_mode = 'XYZ'
             bone.rotation_euler = (math.radians(angle) * strength, 0, 0)
+            if mode == 'PEACE' and finger in {'index', 'middle'} and segment == 1:
+                same_hand = [(b, f) for b, f, i in fingers if i == 1 and bone_side(b) == bone_side(bone)]
+                index = next((b for b, f in same_hand if f == 'index'), None)
+                pinky = next((b for b, f in same_hand if f == 'pinky'), None)
+                if index and pinky:
+                    across = bone.bone.matrix_local.to_3x3().inverted() @ (index.bone.head_local-pinky.bone.head_local)
+                    across.y = 0
+                    if across.length > .00001:
+                        spread = .16 if finger == 'index' else -.13
+                        target = (Vector((0, 1, 0)) + across.normalized()*spread*strength).normalized()
+                        bone.rotation_euler = Vector((0, 1, 0)).rotation_difference(target).to_euler('XYZ')
             changed.append(bone.name)
     head = find_bone(rig, 'head', settings)
-    if head and any(abs(v) > .00001 for v in settings.head_angles):
-        pitch, yaw, roll = (math.radians(v) for v in settings.head_angles)
-        front = math.radians(settings.front)
-        axes = [Vector((math.cos(front), math.sin(front), 0)), Vector((0, 0, 1)), Vector((math.sin(front), -math.cos(front), 0))]
-        to_rig = rig.matrix_world.to_quaternion().inverted()
-        delta = Quaternion()
-        for axis, angle in zip(axes, (pitch, yaw, roll)):
-            delta = Quaternion(to_rig @ axis, angle) @ delta
-        matrix = head.matrix.copy()
-        head.matrix = Matrix.LocRotScale(matrix.translation, delta @ matrix.to_quaternion(), matrix.to_scale())
+    head_angles = settings.head_angles
+    if not custom and not any(abs(v) > .00001 for v in head_angles):
+        head_angles = POSE_HEAD.get(name, head_angles)
+    if head and any(abs(v) > .00001 for v in head_angles):
+        rotate_character(head, head_angles, rig, math.radians(settings.front), strength)
         changed.append(head.name)
     bpy.context.view_layer.update()
     return list(dict.fromkeys(changed))

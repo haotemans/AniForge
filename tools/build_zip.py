@@ -14,4 +14,6 @@ with ZipFile(output, 'w', ZIP_DEFLATED) as archive:
     for file in sorted((root / 'mmd_lora_studio').glob('*.py')):
         archive.write(file, file.relative_to(root))
     archive.write(root / 'README.md', 'mmd_lora_studio/README.md')
+    for file in sorted((root / 'docs').glob('*.md')):
+        archive.write(file, 'mmd_lora_studio/docs/' + file.name)
 print(output)

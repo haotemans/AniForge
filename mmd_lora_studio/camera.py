@@ -3,6 +3,8 @@ import math
 
 from mathutils import Vector, Quaternion
 from .material_profiles import material_role
+from .core import ShotSettings
+from .performance import find_bone
 
 CAMERA_FIELDS = ('camera_projection', 'camera_lens', 'camera_azimuth', 'camera_elevation', 'camera_roll',
                  'camera_zoom', 'camera_shift_x', 'camera_shift_y', 'camera_target_offset', 'camera_aspect',
@@ -59,13 +61,33 @@ def face_bounds(meshes, depsgraph):
 
 
 def configure_camera(context, settings, meshes, camera, shot):
+    settings = ShotSettings(settings, shot)
     scene = context.scene
     lo, hi = model_bounds(meshes, context.evaluated_depsgraph_get())
     height = hi.z - lo.z
     center = (lo + hi) / 2
     group = shot['group']
+    focus = shot.get('focus', '')
     width_pixels, height_pixels = resolution(settings)
     aspect = width_pixels / height_pixels
+    front = math.radians(settings.front)
+    side = Vector((math.cos(front), math.sin(front), 0))
+    forward = Vector((math.sin(front), -math.cos(front), 0))
+    rig = settings.armature
+    evaluated_rig = rig.evaluated_get(context.evaluated_depsgraph_get()) if rig else None
+    def joint(key):
+        bone = find_bone(rig, key, settings) if rig else None
+        return evaluated_rig.matrix_world @ evaluated_rig.pose.bones[bone.name].head if bone else None
+    head = joint('head')
+    torso = joint('upper_body')
+    body_height = max((head.z-lo.z) + height*.07, height*.5) if head else height
+    body_center = torso if torso is not None else center
+    # Approximate anatomical zones. These locate clothing on the wearer;
+    # no claim is made that a particular model actually wears a collar/skirt.
+    regions = {'COLLAR': (.82, .22, 0), 'CHEST': (.72, .30, 0),
+               'SLEEVE_LEFT': (.68, .42, .22), 'SLEEVE_RIGHT': (.68, .42, -.22),
+               'WAIST': (.54, .28, 0), 'HIPS': (.43, .34, 0), 'HEM': (.25, .47, 0),
+               'BACK_UPPER': (.73, .39, 0), 'BACK_WAIST': (.5, .34, 0)}
     if group == 'full_body':
         points = box_points(lo, hi)
         target = center.copy()
@@ -73,20 +95,32 @@ def configure_camera(context, settings, meshes, camera, shot):
         face_lo, face_hi = face
         face_height = face_hi.z - face_lo.z
         target = (face_lo + face_hi) / 2 + Vector((0, 0, face_height * .1))
-        multiplier = 1.55 if settings.portrait_focus == 'FACE' else 2.6
+        multiplier = 1.55 if (focus or settings.portrait_focus) == 'FACE' else 2.6
         size = max(face_height * multiplier, (face_hi.x-face_lo.x) * 1.5 / aspect)
         roi_lo = target - Vector((size*aspect*.5, (face_hi.y-face_lo.y)*.5, size*.5))
         roi_hi = target + Vector((size*aspect*.5, (face_hi.y-face_lo.y)*.5, size*.5))
         points = box_points(roi_lo, roi_hi)
+    elif group == 'outfit_detail' and focus in regions:
+        vertical, fraction, lateral = regions[focus]
+        target = Vector((body_center.x, body_center.y, lo.z + body_height*vertical)) + side * body_height*lateral
+        size = body_height*fraction
+        half = Vector((size*aspect*.5, body_height*.16, size*.5))
+        points = box_points(target-half, target+half)
     else:
         fraction, vertical = {'portrait': (.29, .86), 'half_body': (.46, .78), 'outfit_detail': (.48, .49)}[group]
         target = Vector((center.x, center.y, lo.z + height * vertical))
         size = height * fraction
         width = min(hi.x-lo.x, size * aspect)
         points = box_points(target-Vector((width*.5, (hi.y-lo.y)*.5, size*.5)), target+Vector((width*.5, (hi.y-lo.y)*.5, size*.5)))
-    front = math.radians(settings.front)
-    side = Vector((math.cos(front), math.sin(front), 0))
-    forward = Vector((math.sin(front), -math.cos(front), 0))
+    included = []
+    for key in shot.get('include_hands', []):
+        point = joint(key)
+        if point is not None:
+            radius = body_height*.065
+            points += box_points(point-Vector((radius, radius, radius)), point+Vector((radius, radius, radius)))
+            included.append(key)
+    if included:
+        target = Vector(tuple((min(p[i] for p in points)+max(p[i] for p in points))*.5 for i in range(3)))
     x, y, z = settings.camera_target_offset
     target += height * (side*x + forward*y + Vector((0, 0, z)))
     azimuth = math.radians(settings.front + settings.camera_azimuth + shot.get('azimuth', 0))
@@ -128,4 +162,5 @@ def configure_camera(context, settings, meshes, camera, shot):
     return {'projection': data.type, 'lens': data.lens, 'target': list(target), 'location': list(camera.location),
             'ortho_scale': data.ortho_scale, 'resolution': list(resolution(settings)),
             'roi': [list(point) for point in points], 'azimuth': settings.camera_azimuth+shot.get('azimuth', 0),
-            'elevation': shot.get('elevation', settings.camera_elevation)}
+            'elevation': shot.get('elevation', settings.camera_elevation), 'focus': focus,
+            'included_hands': included}

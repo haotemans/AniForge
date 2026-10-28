@@ -14,10 +14,6 @@ STYLES = {
     'NEVERNESS': ('异环', 0.44, 0.64),
 }
 GROUPS = ('portrait', 'half_body', 'full_body', 'outfit_detail')
-# Azimuth is relative to the model's configured front. All views show the face.
-ANGLES = (-55, -40, -25, -10, 0, 10, 25, 40, 55)
-EXPRESSIONS = ('neutral', 'smile', 'happy', 'blink', 'wink', 'angry', 'sad', 'surprised', 'neutral')
-POSES = ('relaxed', 'hands_front', 'hand_hip', 'presenting', 'relaxed', 'wave', 'open_arms', 'hands_front', 'relaxed')
 MORPHS = {
     'smile': [('口角上げ', 'にやり', 'jawOpen_Smile_01_CLO', 'smile', 'Smile', 'にこり')],
     'happy': [('笑い', 'smile', 'Smile'), ('あ', 'a', 'A')],
@@ -28,6 +24,9 @@ MORPHS = {
     'surprised': [('びっくり', '驚き', 'surprised', 'Surprised'), ('お', 'o', 'O')],
 }
 BONES = {
+    'upper_body': ('上半身', 'upper body', 'spine', 'spine.001', 'Spine'),
+    'upper_body2': ('上半身2', '上半身２', 'upper body2', 'chest', 'spine.002', 'Chest'),
+    'lower_body': ('下半身', 'lower body', 'hips', 'pelvis', 'Hips'),
     'left_arm': ('左腕', 'arm_L', 'upper_arm.L', 'UpperArm_L'),
     'right_arm': ('右腕', 'arm_R', 'upper_arm.R', 'UpperArm_R'),
     'left_elbow': ('左ひじ', '左肘', 'elbow_L', 'forearm.L'),
@@ -35,6 +34,8 @@ BONES = {
     'head': ('頭', 'head', 'Head'),
     'left_wrist': ('左手首', 'wrist_L', 'hand.L', 'LeftHand'),
     'right_wrist': ('右手首', 'wrist_R', 'hand.R', 'RightHand'),
+    'left_shoulder': ('左肩', 'shoulder_L', 'shoulder.L', 'LeftShoulder'),
+    'right_shoulder': ('右肩', 'shoulder_R', 'shoulder.R', 'RightShoulder'),
 }
 # Local XYZ Euler offsets, intended as starting points for standard MMD rigs.
 POSE_ROTATIONS = {
@@ -60,12 +61,57 @@ POSE_DIRECTIONS = {
                     'left_elbow': (-.25, .55, -.65), 'right_elbow': (.25, .55, -.65)},
     'presenting': {'left_arm': (.15, .03, -1), 'right_arm': (-.8, .1, -.6),
                    'left_elbow': (.08, .04, -1), 'right_elbow': (-.6, .65, .3)},
+    'peace_face': {'left_arm': (.18, .02, -1), 'right_arm': (-.65, .15, -.65),
+                   'left_elbow': (.08, .04, -1), 'right_elbow': (.2, .3, 1)},
+    'thinking': {'left_arm': (.2, .08, -1), 'right_arm': (-.3, .25, -.9),
+                 'left_elbow': (-.2, .5, -.6), 'right_elbow': (.25, .6, 1)},
+    'shy': {'left_arm': (.22, .18, -1), 'right_arm': (-.22, .18, -1),
+            'left_elbow': (-.28, .7, .6), 'right_elbow': (.28, .7, .6)},
+    'cheer': {'left_arm': (.6, .12, .8), 'right_arm': (-.6, .12, .8),
+              'left_elbow': (-.15, .08, 1), 'right_elbow': (.15, .08, 1)},
+    'cat_paws': {'left_arm': (.45, .18, -.7), 'right_arm': (-.45, .18, -.7),
+                 'left_elbow': (-.3, .7, .8), 'right_elbow': (.3, .7, .8)},
+    'salute': {'left_arm': (.15, .03, -1), 'right_arm': (-1, .12, .15),
+               'left_elbow': (.08, .04, -1), 'right_elbow': (.55, .25, .8)},
+    'hands_behind': {'left_arm': (.12, -.25, -1), 'right_arm': (-.12, -.25, -1),
+                     'left_elbow': (-.35, -.4, -.8), 'right_elbow': (.35, -.4, -.8)},
+    'elegant': {'left_arm': (.25, .12, -1), 'right_arm': (-.2, .08, -1),
+                'left_elbow': (-.35, .5, -.7), 'right_elbow': (.35, .4, -.8)},
+    'arms_clear': {'left_arm': (.6, .02, -.8), 'right_arm': (-.6, .02, -.8),
+                   'left_elbow': (.3, .06, -1), 'right_elbow': (-.3, .06, -1)},
 }
+
+# Mild character-space rotations: pitch, yaw, roll. Legs/foot IK are untouched.
+# Opposing chest/hip angles add a silhouette; existing foot IK is not edited.
+POSE_BODY = {
+    'hand_hip': {'upper_body': (0, -5, -4), 'lower_body': (0, 2, 2)},
+    'wave': {'upper_body': (0, 3, 3)},
+    'peace_face': {'upper_body': (2, -4, -4), 'upper_body2': (0, 2, 1)},
+    'thinking': {'upper_body': (3, -6, 2)},
+    'shy': {'upper_body': (5, 0, 3)},
+    'cheer': {'upper_body': (-3, 0, -2)},
+    'cat_paws': {'upper_body': (4, 0, -4)},
+    'salute': {'upper_body': (-1, -5, 2)},
+    'hands_behind': {'upper_body': (4, 0, -3)},
+    'elegant': {'upper_body': (0, -9, -3), 'lower_body': (0, 4, 2)},
+    'presenting': {'upper_body': (0, -5, 2)},
+}
+POSE_HEAD = {'peace_face': (0, 0, -9), 'thinking': (3, -6, 6), 'shy': (7, 0, 7),
+             'cheer': (-4, 0, -4), 'cat_paws': (2, 0, -8), 'salute': (-2, 0, 3),
+             'hands_behind': (2, 0, 5), 'elegant': (0, 7, -5)}
+POSE_HANDS = {'peace_face': {'right': 'PEACE', 'left': 'RELAXED'},
+              'thinking': {'right': 'POINT', 'left': 'RELAXED'},
+              'shy': {'left': 'RELAXED', 'right': 'RELAXED'},
+              'cheer': {'left': 'FIST', 'right': 'FIST'},
+              'cat_paws': {'left': 'FIST', 'right': 'FIST'},
+              'salute': {'right': 'OPEN', 'left': 'RELAXED'}}
 
 EXPRESSION_LABELS = {'neutral': '中性', 'smile': '微笑', 'happy': '开心', 'blink': '闭眼',
                      'wink': '眨单眼', 'angry': '生气', 'sad': '悲伤', 'surprised': '惊讶'}
 POSE_LABELS = {'relaxed': '自然站姿', 'hand_hip': '单手叉腰', 'wave': '招手', 'open_arms': '张开双臂',
-              'hands_front': '双手身前', 'presenting': '单手展示'}
+              'hands_front': '双手身前', 'presenting': '单手展示', 'peace_face': '脸侧剪刀手',
+              'thinking': '托腮思考', 'shy': '害羞收手', 'cheer': '元气举手', 'cat_paws': '猫爪手势',
+              'salute': '俏皮敬礼', 'hands_behind': '背手前倾', 'elegant': '侧身立绘', 'arms_clear': '服装展示'}
 EXPRESSION_CHANNELS = {
     'smile': [(MORPHS['smile'][0], .7)],
     'happy': [(('口角上げ', 'にやり', 'smile', 'jawOpen_Happy_01_CLO'), .8),
@@ -149,10 +195,86 @@ def safe_name(value):
     return value or 'character'
 
 
+# Each row is a designed photo, not a Cartesian product of presets.
+# title, pose, expression, azimuth, elevation, head pitch/yaw/roll, focus, hands.
+SHOT_PLANS = {
+    'portrait': (
+        ('正面识别照', 'relaxed', 'neutral', 0, 0, (0, 0, 0), 'HEAD', ()),
+        ('微笑侧颜', 'elegant', 'smile', -20, 2, (0, -8, -4), 'HEAD', ()),
+        ('脸侧比耶', 'peace_face', 'wink', 18, 3, (0, 5, -8), 'HEAD', ('right_wrist',)),
+        ('开心闭眼', 'hands_front', 'happy', -12, 4, (0, -4, 4), 'FACE', ()),
+        ('害羞低头', 'shy', 'smile', 12, 6, (6, 2, 6), 'HEAD', ()),
+        ('思考侧脸', 'thinking', 'neutral', 30, 0, (2, 10, 5), 'HEAD', ('right_wrist',)),
+        ('惊讶反应', 'relaxed', 'surprised', -28, 1, (-2, -8, 0), 'FACE', ()),
+        ('认真神情', 'hand_hip', 'angry', 24, -2, (-2, 8, -3), 'FACE', ()),
+        ('安静侧颜', 'elegant', 'sad', -38, 2, (3, -12, 2), 'HEAD', ()),
+    ),
+    'half_body': (
+        ('自然半身', 'relaxed', 'neutral', 0, 0, (0, 0, 0), 'UPPER', ()),
+        ('俏皮招手', 'wave', 'smile', -18, 2, (0, -5, 4), 'UPPER', ('right_wrist',)),
+        ('叉腰自信', 'hand_hip', 'smile', 25, 0, (0, 8, -4), 'UPPER', ('left_wrist',)),
+        ('剪刀手半身', 'peace_face', 'wink', 15, 3, (0, 4, -8), 'UPPER', ('right_wrist',)),
+        ('双手身前', 'hands_front', 'smile', -12, 3, (2, -4, 3), 'UPPER', ('left_wrist', 'right_wrist')),
+        ('猫爪卖萌', 'cat_paws', 'happy', 8, 4, (2, 2, -7), 'UPPER', ('left_wrist', 'right_wrist')),
+        ('俏皮敬礼', 'salute', 'smile', -25, 0, (-2, -8, 3), 'UPPER', ('right_wrist',)),
+        ('单手介绍', 'presenting', 'neutral', 32, 0, (0, 10, 0), 'UPPER', ('right_wrist',)),
+        ('含蓄背手', 'hands_behind', 'smile', -32, 4, (2, -10, 5), 'UPPER', ()),
+    ),
+    'full_body': (
+        ('正面立绘', 'relaxed', 'neutral', 0, 0, (0, 0, 0), 'FULL', ()),
+        ('侧身立绘', 'elegant', 'smile', -30, 0, (0, -10, -5), 'FULL', ()),
+        ('叉腰立绘', 'hand_hip', 'smile', 30, -2, (0, 10, -4), 'FULL', ()),
+        ('比耶立绘', 'peace_face', 'wink', 15, 1, (0, 5, -8), 'FULL', ()),
+        ('元气举手', 'cheer', 'happy', -15, -2, (-4, -4, -4), 'FULL', ()),
+        ('张臂立绘', 'open_arms', 'smile', 22, 0, (0, 7, 3), 'FULL', ()),
+        ('背手立绘', 'hands_behind', 'smile', -40, 1, (2, -12, 5), 'FULL', ()),
+        ('侧面轮廓', 'arms_clear', 'neutral', 90, 0, (0, 0, 0), 'FULL', ()),
+        ('背面服饰', 'arms_clear', 'neutral', 180, 0, (0, 0, 0), 'FULL', ()),
+    ),
+    'outfit_detail': (
+        ('领口与颈饰', 'arms_clear', 'neutral', 0, 3, (0, 0, 0), 'COLLAR', ()),
+        ('胸前与肩饰', 'arms_clear', 'neutral', -25, 0, (0, 0, 0), 'CHEST', ()),
+        ('左袖与手套', 'arms_clear', 'neutral', 38, 0, (0, 0, 0), 'SLEEVE_LEFT', ()),
+        ('右袖与手套', 'arms_clear', 'neutral', -38, 0, (0, 0, 0), 'SLEEVE_RIGHT', ()),
+        ('腰带与腰饰', 'arms_clear', 'neutral', 15, 2, (0, 0, 0), 'WAIST', ()),
+        ('下装与侧饰', 'arms_clear', 'neutral', -45, 0, (0, 0, 0), 'HIPS', ()),
+        ('下摆与腿部', 'arms_clear', 'neutral', 0, -2, (0, 0, 0), 'HEM', ()),
+        ('背部上装', 'arms_clear', 'neutral', 180, 0, (0, 0, 0), 'BACK_UPPER', ()),
+        ('背面腰饰', 'arms_clear', 'neutral', 155, 2, (0, 0, 0), 'BACK_WAIST', ()),
+    ),
+}
+
+
 def recipe():
-    return [dict(group=g, index=i + 1, azimuth=angle,
-                 expression=EXPRESSIONS[i], pose=POSES[i])
-            for g in GROUPS for i, angle in enumerate(ANGLES)]
+    shots = []
+    for group in GROUPS:
+        for index, row in enumerate(SHOT_PLANS[group], 1):
+            title, pose, expression, azimuth, elevation, head, focus, hands = row
+            shots.append(dict(group=group, index=index, title=title, pose=pose, expression=expression,
+                              azimuth=azimuth, elevation=elevation, focus=focus, include_hands=list(hands),
+                              performance={'head_angles': list(head), 'hand_pose': 'AUTO', 'pose_strength': 1,
+                                           'expression_strength': .85 if expression != 'neutral' else 1},
+                              camera={'camera_projection': 'PERSP', 'camera_lens': 85 if group == 'portrait' else 70,
+                                      'camera_aspect': 'PORTRAIT', 'camera_azimuth': 0, 'camera_elevation': 0,
+                                      'camera_roll': 0, 'camera_zoom': 1, 'camera_shift_x': 0, 'camera_shift_y': 0,
+                                      'camera_target_offset': [0, 0, 0], 'margin': 1.12}))
+    return shots
+
+
+def current_recipe(settings):
+    """Keep the 9+9+9+9 shot targets, with the user's own performance/lens."""
+    return [dict({key: value for key, value in shot.items() if key not in {'camera', 'performance', 'include_hands', 'elevation'}},
+                 pose=settings.pose, expression=settings.expression) for shot in recipe()]
+
+
+class ShotSettings:
+    """Read-only settings overlay; per-photo values never alter the UI settings."""
+    def __init__(self, settings, shot):
+        self._settings = settings
+        self._overrides = {**shot.get('performance', {}), **shot.get('camera', {})}
+
+    def __getattr__(self, name):
+        return self._overrides[name] if name in self._overrides else getattr(self._settings, name)
 
 
 def three_view_recipe(group='portrait', pose='relaxed', expression='neutral'):

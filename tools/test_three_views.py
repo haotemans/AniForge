@@ -19,6 +19,7 @@ parser.add_argument('--expression')
 parser.add_argument('--projection', choices=('ORTHO', 'PERSP'))
 parser.add_argument('--aspect', choices=('SQUARE', 'PORTRAIT', 'LANDSCAPE'))
 parser.add_argument('--group', choices=('portrait', 'half_body', 'full_body', 'outfit_detail'), default='portrait')
+parser.add_argument('--plan-index', type=int, choices=range(1, 10), help='Use one linked 36-shot plan entry; still render only front/side/back')
 args = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
 addon.register()
 settings = bpy.context.scene.ml_settings
@@ -37,6 +38,9 @@ if args.aspect:
 settings.material_profiles = True
 bpy.ops.ml.materials()
 shots = three_view_recipe(settings.preview_group, settings.pose, settings.expression)
+if args.plan_index:
+    base = next(s for s in addon.recipe() if s['group'] == args.group and s['index'] == args.plan_index)
+    shots = [dict(base, index=i+1, azimuth=angle, view=view) for i, (angle, view) in enumerate(((0, 'front'), (90, 'side'), (180, 'back')))]
 session = addon.RenderSession(bpy.context, shots)
 try:
     session.setup(bpy.context)
@@ -50,6 +54,7 @@ else:
 materials = {slot.material for obj in addon.model_meshes(settings) for slot in obj.material_slots if slot.material}
 report = {'status': 'complete', 'game': args.game, 'render_folder': str(session.folder),
           'version': addon.bl_info['version'], 'shots': 3, 'resolution': args.resolution,
+          'selected_plan_index': args.plan_index,
           'materials': [{'name': mat.name, 'source': mat.get('mmd_lora_source'),
                          'role': mat.get('mmd_lora_role'), 'surface': mat.surface_render_method,
                          'shader_to_rgb_nodes': sum(n.type == 'SHADERTORGB' for n in mat.node_tree.nodes)}

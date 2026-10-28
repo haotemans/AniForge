@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 5, 0),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 6, 0),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 36-shot LoRA dataset rendering',
     'category': 'Render',
@@ -15,7 +15,8 @@ from bpy.props import StringProperty, EnumProperty, PointerProperty, IntProperty
 from bpy_extras.io_utils import ImportHelper, ExportHelper
 from mathutils import Vector, Matrix
 
-from .core import STYLES, GROUPS, MORPHS, BONES, POSE_ROTATIONS, POSE_DIRECTIONS, recipe, three_view_recipe, caption, safe_name, write_json
+from .core import (STYLES, GROUPS, MORPHS, BONES, POSE_ROTATIONS, POSE_DIRECTIONS, POSE_LABELS,
+                   EXPRESSION_LABELS, ShotSettings, current_recipe, recipe, three_view_recipe, caption, safe_name, write_json)
 from .material_profiles import material_role, alpha_image, face_light, hair_color
 from .performance import (aliases, find_bone, shape_blocks, custom_presets, store_presets, enum_presets,
                           expression_apply, pose_apply, capture_expression, capture_pose)
@@ -167,7 +168,7 @@ class MLSettings(bpy.types.PropertyGroup):
     expression_strength: FloatProperty(name='表情强度', default=1, min=0, max=1)
     pose_strength: FloatProperty(name='姿势强度', default=1, min=0, max=1)
     head_angles: FloatVectorProperty(name='头部俯仰 / 转向 / 歪头', size=3, default=(0, 0, 0), min=-45, max=45)
-    hand_pose: EnumProperty(name='手型模板', items=[('KEEP', '保留当前手型', ''), ('RELAXED', '轻微放松', ''), ('FIST', '握拳', ''), ('POINT', '食指指向', ''), ('PEACE', '剪刀手', '')], default='KEEP')
+    hand_pose: EnumProperty(name='手型模板', items=[('AUTO', '跟随姿势', '', 5), ('KEEP', '保留当前手型', '', 0), ('RELAXED', '轻微放松', '', 1), ('FIST', '握拳', '', 2), ('POINT', '食指指向', '', 3), ('PEACE', '剪刀手', '', 4)], default='AUTO')
     preset_name: StringProperty(name='新预设名称', description='留空时覆盖当前选中的预设')
     capture_all_keys: BoolProperty(name='保存全部形态键', default=False, description='关闭时仅保存识别出的脸部键，避免绑定体型变化')
     camera_preset: EnumProperty(name='镜头预设', items=lambda self, context: enum_presets(self, 'cameras'))
@@ -182,7 +183,8 @@ class MLSettings(bpy.types.PropertyGroup):
     camera_target_offset: FloatVectorProperty(name='对焦偏移（身高比例）', size=3, default=(0, 0, 0), min=-.5, max=.5)
     camera_aspect: EnumProperty(name='画幅', items=[('SQUARE', '1:1 方形', ''), ('PORTRAIT', '3:4 竖幅', ''), ('LANDSCAPE', '4:3 横幅', '')], default='SQUARE')
     portrait_focus: EnumProperty(name='肖像范围', items=[('HEAD', '头肩（按脸部定位）', ''), ('FACE', '脸部特写', '')], default='HEAD')
-    dataset_variation: EnumProperty(name='完整数据集的预设', items=[('CYCLE', '内置表情 / 姿势轮换', ''), ('CURRENT', '全部使用当前选择', '')], default='CYCLE')
+    dataset_variation: EnumProperty(name='36 张拍摄方案', items=[('CYCLE', '二次元姿势 / 表情 / 镜头联动', '每张使用编排的手势、表情、头部与镜头'), ('CURRENT', '当前姿势 / 表情 / 镜头参数', '沿用当前控制，仍拍四组各九个目标')], default='CYCLE')
+    plan_index: IntProperty(name='组内镜头', default=1, min=1, max=9)
     mapping_report: StringProperty(default='')
     material_profiles: BoolProperty(name='头发 / 脸部优化', default=True)
     hair_highlight_strength: FloatProperty(name='头发高光层强度', default=.22, min=0, max=1)
@@ -479,6 +481,48 @@ class ML_OT_mapping(bpy.types.Operator):
             self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
 
 
+def dataset_plan(settings):
+    return current_recipe(settings) if settings.dataset_variation == 'CURRENT' else recipe()
+
+
+def update_preview_camera(context, settings, meshes, shot):
+    effective = ShotSettings(settings, shot)
+    pose_apply(effective, shot.get('pose', settings.pose))
+    expression_apply(effective, meshes, shot.get('expression', settings.expression))
+    context.view_layer.update()
+    camera = next((obj for obj in context.scene.objects if obj.type == 'CAMERA' and obj.get('aniforge_preview_for') == settings.armature.name), None)
+    if not camera:
+        camera = bpy.data.objects.new('AniForge Preview Camera', bpy.data.cameras.new('AniForge Preview Camera'))
+        context.scene.collection.objects.link(camera); camera['aniforge_preview_for'] = settings.armature.name
+    context.scene.render.pixel_aspect_x = context.scene.render.pixel_aspect_y = 1
+    configure_camera(context, settings, meshes, camera, shot)
+    context.scene.camera = camera
+    if context.area and context.area.type == 'VIEW_3D':
+        context.space_data.region_3d.view_perspective = 'CAMERA'
+    return camera
+
+
+class ML_OT_shot_plan(bpy.types.Operator):
+    bl_idname = 'ml.shot_plan'; bl_label = '预览编排镜头（不出图）'; bl_options = {'REGISTER', 'UNDO'}
+    report_only: BoolProperty(default=False)
+
+    def execute(self, context):
+        try:
+            settings = context.scene.ml_settings
+            plan = dataset_plan(settings)
+            if self.report_only:
+                text = bpy.data.texts.get('AniForge 36 Shot Plan') or bpy.data.texts.new('AniForge 36 Shot Plan')
+                text.clear(); text.write(json.dumps({'shots': plan, 'total': len(plan)}, ensure_ascii=False, indent=2))
+                self.report({'INFO'}, '36 张拍摄清单已写入文本编辑器，没有渲染图片。')
+            else:
+                shot = next(s for s in plan if s['group'] == settings.preview_group and s['index'] == settings.plan_index)
+                update_preview_camera(context, settings, model_meshes(settings), shot)
+                self.report({'INFO'}, f'{shot["index"]}/9 {shot["title"]}：姿势、表情和镜头已联动，没有渲染图片。')
+            return {'FINISHED'}
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
+
+
 class ML_OT_frame_camera(bpy.types.Operator):
     bl_idname = 'ml.frame_camera'; bl_label = '应用姿势表情并生成预览相机'; bl_options = {'REGISTER', 'UNDO'}
 
@@ -486,18 +530,8 @@ class ML_OT_frame_camera(bpy.types.Operator):
         try:
             settings = context.scene.ml_settings
             meshes = model_meshes(settings)
-            pose_apply(settings, settings.pose); expression_apply(settings, meshes, settings.expression)
-            context.view_layer.update()
-            camera = next((obj for obj in context.scene.objects if obj.type == 'CAMERA' and obj.get('aniforge_preview_for') == settings.armature.name), None)
-            if not camera:
-                camera = bpy.data.objects.new('AniForge Preview Camera', bpy.data.cameras.new('AniForge Preview Camera'))
-                context.scene.collection.objects.link(camera); camera['aniforge_preview_for'] = settings.armature.name
             shot = dict(group=settings.preview_group, azimuth=0)
-            context.scene.render.pixel_aspect_x = context.scene.render.pixel_aspect_y = 1
-            configure_camera(context, settings, meshes, camera, shot)
-            context.scene.camera = camera
-            if context.area and context.area.type == 'VIEW_3D':
-                context.space_data.region_3d.view_perspective = 'CAMERA'
+            update_preview_camera(context, settings, meshes, shot)
             self.report({'INFO'}, '预览相机已更新，没有渲染图片。'); return {'FINISHED'}
         except Exception as exc:
             self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
@@ -547,7 +581,7 @@ class RenderSession:
     def setup(self, context):
         if not self.settings.output.strip():
             raise ValueError('输出目录不能为空。')
-        root = Path(bpy.path.abspath(self.settings.output))
+        root = Path(bpy.path.abspath(self.settings.output)).resolve()
         self.folder = root / (safe_name(self.settings.trigger) + '_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
         self.folder.mkdir(parents=True, exist_ok=False)
         self.manifest = {'status': 'running', 'style': self.settings.style, 'blender': bpy.app.version_string,
@@ -589,8 +623,9 @@ class RenderSession:
 
     def prepare_shot(self, context, shot):
         self.reset_character()
-        expression_keys = expression_apply(self.settings, self.meshes, shot['expression'])
-        pose_bones = pose_apply(self.settings, shot['pose'])
+        effective = ShotSettings(self.settings, shot)
+        expression_keys = expression_apply(effective, self.meshes, shot['expression'])
+        pose_bones = pose_apply(effective, shot['pose'])
         context.view_layer.update()
         group = shot['group']
         self.camera_meta = configure_camera(context, self.settings, self.meshes, self.camera, shot)
@@ -640,6 +675,7 @@ class RenderSession:
 class ML_OT_render(bpy.types.Operator):
     bl_idname = 'ml.render_dataset'; bl_label = '渲染三视图测试'
     test_only: BoolProperty(name='仅三视图测试', default=True)
+    use_plan_shot: BoolProperty(name='测试当前编排镜头', default=False)
     _timer = None
     _session = None
 
@@ -658,9 +694,10 @@ class ML_OT_render(bpy.types.Operator):
     def execute(self, context):
         self.index = 0
         settings = context.scene.ml_settings
-        self.shots = three_view_recipe(settings.preview_group, settings.pose, settings.expression) if self.test_only else recipe()
-        if not self.test_only and settings.dataset_variation == 'CURRENT':
-            self.shots = [dict(shot, pose=settings.pose, expression=settings.expression) for shot in self.shots]
+        self.shots = three_view_recipe(settings.preview_group, settings.pose, settings.expression) if self.test_only else dataset_plan(settings)
+        if self.test_only and self.use_plan_shot:
+            base = next(s for s in dataset_plan(settings) if s['group'] == settings.preview_group and s['index'] == settings.plan_index)
+            self.shots = [dict(base, index=i+1, azimuth=angle, view=view) for i, (angle, view) in enumerate(((0, 'front'), (90, 'side'), (180, 'back')))]
         try:
             self._session = RenderSession(context, self.shots); self._session.setup(context)
             context.scene.ml_settings.running = True
@@ -776,6 +813,14 @@ class ML_PT_panel(bpy.types.Panel):
             col.operator('ml.preview', text='单张预览（当前选择）')
             col.operator('ml.render_dataset', text='三视图测试：正 / 侧 / 背', icon='RENDER_STILL').test_only = True
             col.separator(); col.prop(settings, 'dataset_variation')
+            box = col.box(); box.label(text='肖像 9 · 半身 9 · 全身 9 · 服装 9')
+            box.prop(settings, 'plan_index')
+            shot = next(s for s in dataset_plan(settings) if s['group'] == settings.preview_group and s['index'] == settings.plan_index)
+            box.label(text=shot['title'])
+            box.label(text=f'{POSE_LABELS.get(shot["pose"], shot["pose"])} / {EXPRESSION_LABELS.get(shot["expression"], shot["expression"])}')
+            box.operator('ml.shot_plan')
+            op = box.operator('ml.render_dataset', text='此方案三视图测试'); op.test_only = True; op.use_plan_shot = True
+            box.operator('ml.shot_plan', text='查看 36 张拍摄清单').report_only = True
             col.operator('ml.render_dataset', text='完整数据集：36 张 + 标签').test_only = False
         layout.label(text=settings.progress)
         if settings.running:
@@ -783,7 +828,7 @@ class ML_PT_panel(bpy.types.Panel):
 
 
 CLASSES = (MLSettings, ML_OT_materials, ML_OT_textures, ML_OT_assign_textures, ML_OT_preset,
-           ML_OT_export_presets, ML_OT_import_presets, ML_OT_vpd, ML_OT_mapping, ML_OT_frame_camera,
+           ML_OT_export_presets, ML_OT_import_presets, ML_OT_vpd, ML_OT_mapping, ML_OT_frame_camera, ML_OT_shot_plan,
            ML_OT_render, ML_OT_preview, ML_PT_panel)
 
 

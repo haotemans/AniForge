@@ -17,7 +17,10 @@ parser.add_argument('--expression')
 parser.add_argument('--projection', choices=('ORTHO', 'PERSP'))
 parser.add_argument('--aspect', choices=('SQUARE', 'PORTRAIT', 'LANDSCAPE'))
 parser.add_argument('--group', choices=('portrait', 'half_body', 'full_body', 'outfit_detail'), default='portrait')
+parser.add_argument('--plan-index', type=int, choices=range(1, 10))
 args = parser.parse_args()
+args.source = args.source.resolve()
+args.output = args.output.resolve()
 args.output.mkdir(parents=True, exist_ok=True)
 failed = []
 for game in args.games:
@@ -26,7 +29,7 @@ for game in args.games:
         raise FileNotFoundError(blend)
     print('START', game, '3 views', flush=True)
     extra = [part for flag, value in (('--pose', args.pose), ('--expression', args.expression), ('--projection', args.projection),
-                                      ('--aspect', args.aspect), ('--group', args.group)) if value for part in (flag, value)]
+                                      ('--aspect', args.aspect), ('--group', args.group), ('--plan-index', str(args.plan_index) if args.plan_index else None)) if value for part in (flag, value)]
     with (args.output / (game + '.log')).open('w', encoding='utf-8') as log:
         result = subprocess.run([args.blender, '--background', str(blend), '--python-exit-code', '1',
                                  '--python', str(ROOT / 'tools/test_three_views.py'), '--', '--game', game,

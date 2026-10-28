@@ -21,9 +21,11 @@ scene = bpy.context.scene; settings = scene.ml_settings
 bpy.ops.object.armature_add()
 rig = bpy.context.object; rig.name = 'PerformanceRig'
 bpy.ops.object.mode_set(mode='EDIT')
-rig.data.edit_bones[0].name = 'body'
-for name, head, tail, parent in [('頭', (0, 0, 1.6), (0, 0, 1.9), 'body'),
-        ('左腕', (.2, 0, 1.4), (.65, 0, 1.4), 'body'), ('右腕', (-.2, 0, 1.4), (-.65, 0, 1.4), 'body'),
+rig.data.edit_bones[0].name = '下半身'
+for name, head, tail, parent in [('上半身', (0, 0, 1), (0, 0, 1.4), '下半身'),
+        ('上半身2', (0, 0, 1.4), (0, 0, 1.6), '上半身'),
+        ('頭', (0, 0, 1.6), (0, 0, 1.9), '上半身2'),
+        ('左腕', (.2, 0, 1.4), (.65, 0, 1.4), '上半身2'), ('右腕', (-.2, 0, 1.4), (-.65, 0, 1.4), '上半身2'),
         ('左ひじ', (.65, 0, 1.4), (.95, 0, 1.4), '左腕'), ('右ひじ', (-.65, 0, 1.4), (-.95, 0, 1.4), '右腕'),
         ('左手首', (.95, 0, 1.4), (1.1, 0, 1.4), '左ひじ'), ('右手首', (-.95, 0, 1.4), (-1.1, 0, 1.4), '右ひじ')]:
     bone = rig.data.edit_bones.new(name); bone.head = head; bone.tail = tail; bone.parent = rig.data.edit_bones[parent]
@@ -101,6 +103,16 @@ with tempfile.TemporaryDirectory() as folder:
     with patch.object(addon.RenderSession, 'render', lambda self, context, shot: dispatched.append(shot.copy())):
         assert bpy.ops.ml.render_dataset() == {'FINISHED'}
     assert len(dispatched) == 3 and all(s['pose'] == '我的站姿' and s['expression'] == '轻微微笑' for s in dispatched)
+    dispatched.clear()
+    with patch.object(addon.RenderSession, 'render', lambda self, context, shot: dispatched.append(shot.copy())):
+        assert bpy.ops.ml.render_dataset(test_only=False) == {'FINISHED'}
+    assert len(dispatched) == 36 and dispatched == addon.recipe()
+    dispatched.clear()
+    settings.preview_group = 'portrait'; settings.plan_index = 3
+    with patch.object(addon.RenderSession, 'render', lambda self, context, shot: dispatched.append(shot.copy())):
+        assert bpy.ops.ml.render_dataset(use_plan_shot=True) == {'FINISHED'}
+    assert [s['azimuth'] for s in dispatched] == [0, 90, 180]
+    assert all(s['pose'] == 'peace_face' and s['expression'] == 'wink' for s in dispatched)
 
 camera = bpy.data.objects.new('Fit Camera', bpy.data.cameras.new('Fit Camera')); scene.collection.objects.link(camera)
 scene.render.resolution_percentage = 100
@@ -115,6 +127,23 @@ for projection in ('ORTHO', 'PERSP'):
                 data = configure_camera(bpy.context, settings, meshes, camera, {'group': group, 'azimuth': angle})
                 projected = [world_to_camera_view(scene, camera, Vector(point)) for point in data['roi']]
                 assert all(-.0001 <= p.x <= 1.0001 and -.0001 <= p.y <= 1.0001 and p.z > 0 for p in projected), (projection, aspect, group, angle, [tuple(p) for p in projected])
+
+with tempfile.TemporaryDirectory() as folder:
+    settings.output = folder
+    before = (settings.camera_lens, settings.camera_projection, settings.camera_aspect, tuple(settings.head_angles), settings.hand_pose)
+    session = addon.RenderSession(bpy.context, addon.recipe()); session.setup(bpy.context)
+    for shot in addon.recipe():
+        session.prepare_shot(bpy.context, shot)
+        projected = [world_to_camera_view(scene, session.camera, Vector(p)) for p in session.camera_meta['roi']]
+        assert all(-.0001 <= p.x <= 1.0001 and -.0001 <= p.y <= 1.0001 and p.z > 0 for p in projected), shot['title']
+        assert (scene.render.resolution_x, scene.render.resolution_y) == (768, 1024)
+        assert session.camera.data.type == 'PERSP'
+    session.close('checked_without_rendering')
+    assert before == (settings.camera_lens, settings.camera_projection, settings.camera_aspect, tuple(settings.head_angles), settings.hand_pose)
+    assert not list(Path(folder).rglob('*.png'))
+assert bpy.ops.ml.shot_plan(report_only=True) == {'FINISHED'}
+assert len(json.loads(bpy.data.texts['AniForge 36 Shot Plan'].as_string())['shots']) == 36
+assert bpy.ops.ml.shot_plan() == {'FINISHED'}
 before_cameras = len(bpy.data.cameras)
 settings.camera_aspect = 'LANDSCAPE'; settings.camera_shift_y = .4
 try:
@@ -125,7 +154,7 @@ except ValueError:
 settings.camera_shift_y = 0
 assert bpy.ops.ml.frame_camera() == {'FINISHED'}
 assert bpy.ops.ml.frame_camera() == {'FINISHED'}
-assert len(bpy.data.cameras) == before_cameras+1
+assert len(bpy.data.cameras) == before_cameras
 with tempfile.TemporaryDirectory() as folder:
     settings.output = folder
     before_pose = [(bone, bone.rotation_mode, bone.matrix_basis.copy()) for bone in rig.pose.bones]
@@ -143,5 +172,5 @@ with tempfile.TemporaryDirectory() as folder:
     assert all(abs(bone.matrix_basis[i][j]-matrix[i][j]) < .0001 and bone.rotation_mode == mode for bone, mode, matrix in before_pose for i in range(4) for j in range(4))
     assert all(abs(key.value-value) < .0001 for key, value in before_shapes)
 
-print('ANIFORGE_PERFORMANCE_CAMERA_OK: deterministic poses, expressions, named JSON library, 72 camera fits; no renders')
+print('ANIFORGE_PERFORMANCE_CAMERA_OK: 15 deterministic poses, named JSON library, 72 camera fits + 36 linked shots; no renders')
 addon.unregister()

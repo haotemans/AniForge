@@ -68,7 +68,7 @@ class ML_OT_select_shot(bpy.types.Operator):
 
 class ML_OT_animchar(bpy.types.Operator):
     bl_idname = 'ml.animchar'; bl_label = 'AnimChar 动作工作流'; bl_options = {'REGISTER', 'UNDO'}
-    action: EnumProperty(items=[(v, v, '') for v in ('CONFIGURE', 'CAPTURE', 'TEXT', 'BIND', 'REVIEW', 'NEEDS_FIX', 'EDIT', 'FINISH_EDIT', 'CANCEL_EDIT', 'REFERENCE')])
+    action: EnumProperty(items=[(v, v, '') for v in ('RESTORE', 'CONFIGURE', 'CAPTURE', 'TEXT', 'BIND', 'REVIEW', 'NEEDS_FIX', 'EDIT', 'FINISH_EDIT', 'CANCEL_EDIT', 'REFERENCE')])
 
     @classmethod
     def poll(cls, context):
@@ -80,7 +80,10 @@ class ML_OT_animchar(bpy.types.Operator):
             shot = selected(settings)
             if animchar.editing() and self.action not in {'FINISH_EDIT', 'CANCEL_EDIT', 'REFERENCE'}:
                 raise ValueError('请先完成或取消当前 AnimChar 编辑。')
-            if self.action == 'REFERENCE':
+            if self.action == 'RESTORE':
+                result = animchar.restore_results(settings)
+                settings.animchar_status = f'本地已保存 {result["total"]} 份动作，本次恢复 {result["restored"]} 份。'
+            elif self.action == 'REFERENCE':
                 bpy.ops.wm.url_open(url=f'https://github.com/haotemans/AniForge/pull/{shot.get("reference_pr", 1)}')
             elif self.action == 'CONFIGURE':
                 values = animchar.configure(settings)
@@ -120,6 +123,7 @@ def draw_shots(layout, settings):
     from . import dataset_plan
     shots = dataset_plan(settings)
     layout.prop(settings, 'preview_group', text='照片分组')
+    layout.operator('ml.animchar', text='恢复本地已保存结果（不重新生成）').action = 'RESTORE'
     box = layout.box()
     box.label(text='肖像 12 · 半身 12 · 全身 9 · 衣服 9')
     for shot in (s for s in shots if s['group'] == settings.preview_group):

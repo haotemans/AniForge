@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 9, 0),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 9, 1),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials, AnimChar shot workflow and 42-photo datasets',
     'category': 'Render',
@@ -164,8 +164,12 @@ def clamp_plan_index(settings, _context=None):
         settings.animchar_prompt = ''
 
 
+def armature_changed(settings, _context):
+    animchar.restore_scene_results(settings)
+
+
 class MLSettings(bpy.types.PropertyGroup):
-    armature: PointerProperty(name='角色骨架', type=bpy.types.Object, poll=lambda self, obj: obj.type == 'ARMATURE')
+    armature: PointerProperty(name='角色骨架', type=bpy.types.Object, poll=lambda self, obj: obj.type == 'ARMATURE', update=armature_changed)
     style: EnumProperty(name='游戏风格', items=[(k, v[0], '风格近似预设，非官方着色器') for k, v in STYLES.items()])
     output: StringProperty(name='输出目录', subtype='DIR_PATH', default='//lora_dataset')
     textures: StringProperty(name='贴图目录', subtype='DIR_PATH')
@@ -409,6 +413,7 @@ class ML_OT_import_presets(bpy.types.Operator, ImportHelper):
             saved = custom_presets(context.scene.ml_settings)
             for category in ('expressions', 'poses', 'cameras', 'bone_map', 'pose_options', 'shot_overrides', 'shot_assets', 'legacy_shot_overrides'):
                 saved[category].update(incoming[category])
+            animchar.persist_results(context.scene.ml_settings, saved)
             store_presets(context.scene.ml_settings, saved)
             self.report({'INFO'}, '已导入预设；同名项目已更新。'); return {'FINISHED'}
         except Exception as exc:
@@ -1040,10 +1045,13 @@ CLASSES = (MLSettings, ML_OT_materials, ML_OT_textures, ML_OT_assign_textures, M
 
 @bpy.app.handlers.persistent
 def migrate_settings(_=None):
-    for scene in bpy.data.scenes:
+    # Blender enables add-ons under _RestrictData at startup. Initialize the
+    # loaded scenes from load_post/the timer instead of failing registration.
+    for scene in getattr(bpy.data, 'scenes', ()):
         if scene.ml_settings.get('ui_section') == 4:
             scene.ml_settings.ui_section = 'PERFORMANCE'
         clamp_plan_index(scene.ml_settings)
+        animchar.restore_scene_results(scene.ml_settings)
 
 
 def register():
@@ -1053,15 +1061,19 @@ def register():
     if migrate_settings not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(migrate_settings)
     migrate_settings()
+    if not bpy.app.timers.is_registered(animchar.restore_tick):
+        bpy.app.timers.register(animchar.restore_tick, first_interval=1.0, persistent=True)
 
 
 def unregister():
     if animchar.busy() or animchar.editing():
         raise RuntimeError('请先完成当前 AnimChar 任务再禁用插件。')
-    if any(scene.ml_settings.running for scene in bpy.data.scenes):
+    if any(scene.ml_settings.running for scene in getattr(bpy.data, 'scenes', ())):
         raise RuntimeError('请先结束批量渲染再禁用插件。')
     if migrate_settings in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(migrate_settings)
+    if bpy.app.timers.is_registered(animchar.restore_tick):
+        bpy.app.timers.unregister(animchar.restore_tick)
     del bpy.types.Scene.ml_settings
     workflow.clear_previews()
     for cls in reversed(CLASSES):

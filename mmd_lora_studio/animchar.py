@@ -10,22 +10,155 @@ from pathlib import Path
 import bpy
 
 from .core import require_shot_asset
+from . import pose_store
 from .performance import aliases, find_bone, finger_bones, bone_side, custom_presets, store_presets
 
 _JOB = None
 _EDITOR = None
 _CAPTURE_REPORTS = {}
+_RESTORE_STAMPS = {}
 
 
 def rig_key(rig):
     if not rig:
         return ''
-    # Include rest axes, parenting and scale so a cached pose cannot silently
-    # cross into a differently rolled or proportioned character skeleton.
+    # Object/data-block names and collection order change on reimport. Rest
+    # axes and parenting identify compatible skeletons across project files.
+    data = sorted([(b.name, b.parent.name if b.parent else '',
+                    [round(v, 6) for row in b.matrix_local for v in row]) for b in rig.data.bones], key=lambda item: item[0])
+    return hashlib.sha256(json.dumps(data, ensure_ascii=False).encode()).hexdigest()[:24]
+
+
+def legacy_rig_key(rig):
     data = [(b.name, b.parent.name if b.parent else '',
              [round(v, 6) for row in b.matrix_local for v in row]) for b in rig.data.bones]
     data.append(rig.data.name)
     return hashlib.sha256(json.dumps(data, ensure_ascii=False).encode()).hexdigest()[:24]
+
+
+def result_directory():
+    configured = bpy.utils.user_resource('CONFIG')
+    base = Path(configured) if configured else Path(bpy.utils.resource_path('USER'))/'config'
+    if not base.is_absolute():
+        raise ValueError('找不到 Blender 用户配置目录，未将动作写入工程目录。')
+    return base/'aniforge'/'pose_results'
+
+
+def _migrate_model_keys(library, key, old_key):
+    migrated = []
+    for identifier, asset in list(library['shot_assets'].items()):
+        if asset['rig'] != old_key or old_key == key:
+            continue
+        replacement = dict(asset, rig=key)
+        library['shot_assets'].setdefault(key+'|'+asset['slot'], replacement)
+        del library['shot_assets'][identifier]
+        migrated.append(asset['slot'])
+    return migrated
+
+
+def persist_results(settings, library=None, slots=None):
+    if not settings.armature:
+        return 0
+    library = library if library is not None else custom_presets(settings)
+    key = rig_key(settings.armature)
+    _migrate_model_keys(library, key, legacy_rig_key(settings.armature))
+    saved = 0
+    for asset in library['shot_assets'].values():
+        if asset['rig'] != key or slots is not None and asset['slot'] not in slots:
+            continue
+        pose_store.save_result(result_directory(), key, asset, library['poses'][asset['pose']],
+                               library['pose_options'].get(asset['pose'], {'leg_mode': 'FK'}), settings.armature.data.name)
+        saved += 1
+    return saved
+
+
+def _restore_stamp(settings, key):
+    directory = pose_store.model_directory(result_directory(), key)
+    files = []
+    for path in sorted(directory.glob('*.json*')):
+        if path.name.startswith('.'):
+            continue
+        try:
+            info = path.stat()
+        except OSError:
+            continue
+        files.append((path.name, info.st_mtime_ns, info.st_size))
+    return key, hash(settings.presets_json), tuple(files)
+
+
+def restore_results(settings, force=True):
+    """Load compatible saved slots without replacing this project's edits."""
+    rig = settings.armature
+    if not rig:
+        return dict(restored=0, migrated=0, total=0, issues=[])
+    key = rig_key(rig)
+    identity = settings.as_pointer()
+    stamp = _restore_stamp(settings, key)
+    if not force and _RESTORE_STAMPS.get(identity) == stamp:
+        return None
+    library = custom_presets(settings)
+    migrated = _migrate_model_keys(library, key, legacy_rig_key(rig))
+    # Seed old scene-only results once; never overwrite a newer disk result
+    # merely because an older .blend was opened.
+    for slot in migrated:
+        target = pose_store.model_directory(result_directory(), key)/pose_store.slot_filename(slot)
+        if not target.exists():
+            persist_results(settings, library, [slot])
+    results, issues = pose_store.load_results(result_directory(), key)
+    restored = 0
+    for slot, document in results.items():
+        identifier = key+'|'+slot
+        if identifier in library['shot_assets']:
+            continue
+        asset = dict(document['asset'])
+        name = asset['pose']
+        if name in library['poses'] and library['poses'][name] != document['pose']:
+            base = name+' [本地库]'; suffix = 1; name = base
+            while name in library['poses']:
+                suffix += 1; name = base+str(suffix)
+            asset['pose'] = name
+        library['poses'][name] = document['pose']
+        library['pose_options'][name] = document['pose_options']
+        library['shot_assets'][identifier] = asset
+        restored += 1
+    if migrated or restored:
+        store_presets(settings, library)
+        settings.animchar_status = f'已从本地动作库恢复 {restored} 份，迁移旧结果 {len(migrated)} 份；无需重新生成。'
+    if issues:
+        settings.animchar_status = '本地动作库：'+issues[0]
+    _RESTORE_STAMPS[identity] = _restore_stamp(settings, key)
+    return dict(restored=restored, migrated=len(migrated), total=sum(a['rig'] == key for a in library['shot_assets'].values()), issues=issues)
+
+
+def restore_scene_results(settings):
+    try:
+        adopt_single_armature(settings)
+        return restore_results(settings)
+    except Exception as exc:
+        settings.animchar_status = '本地动作读取失败：'+str(exc)
+        return None
+
+
+def adopt_single_armature(settings):
+    if settings.armature:
+        return
+    owner = getattr(settings, 'id_data', None)
+    candidates = [o for o in getattr(owner, 'objects', ()) if o.type == 'ARMATURE' and not o.name.startswith('AniForge')]
+    if len(candidates) == 1:
+        settings.armature = candidates[0]
+
+
+def restore_tick():
+    for scene in getattr(bpy.data, 'scenes', ()):
+        try:
+            settings = scene.ml_settings
+            if settings.running or busy() or editing():
+                continue
+            adopt_single_armature(settings)
+            restore_results(settings, force=False)
+        except Exception as exc:
+            scene.ml_settings.animchar_status = '本地动作读取失败：'+str(exc)
+    return 2.0
 
 
 def modules():
@@ -131,6 +264,7 @@ def bind(settings, shot, rig=None, reference='Pose Editor'):
     for position in replaced:
         if position in library['shot_overrides']:
             library['legacy_shot_overrides'][position] = library['shot_overrides'].pop(position)
+    persist_results(settings, library, [slot])
     store_presets(settings, library)
     _CAPTURE_REPORTS[name] = {'expected_joints': {n: [list(rig.matrix_world @ evaluated.pose.bones[n].head),
                                                     list(rig.matrix_world @ evaluated.pose.bones[n].tail)] for n in mapped},
@@ -150,6 +284,7 @@ def mark_reviewed(settings, shot, value=True):
     asset['reviewed'] = value
     if value:
         asset.pop('review_note', None)
+    persist_results(settings, library, [asset['slot']])
     store_presets(settings, library)
 
 
@@ -160,6 +295,7 @@ def mark_needs_fix(settings, shot, note):
         raise ValueError('请先完成当前模型的 AnimChar 动作。')
     asset['reviewed'] = False
     asset['review_note'] = note.strip()[:256] or '手型、穿模或构图需要修正。'
+    persist_results(settings, library, [asset['slot']])
     store_presets(settings, library)
 
 
@@ -348,6 +484,15 @@ def _finish_job(error=''):
 def start_capture(context, settings, shot, reference, text_prompt='', source_rig=None, source_objects=()):
     """Native image capture + native retarget, isolated on a skeleton copy."""
     global _JOB
+    if not source_rig and not settings.animchar_rebuild and not busy() and not editing():
+        restore_results(settings)
+        saved = custom_presets(settings)['shot_assets'].get(f'{rig_key(settings.armature)}|{shot.get("asset_slot")}')
+        props = getattr(context.scene, 'animchartools_props', None)
+        alternate = bool(props and (props.use_general_model or props.use_pose_optimization))
+        expected = 'AnimChar text: '+text_prompt if text_prompt else 'AnimCharTools:body_stand' if shot.get('asset_slot') == 'neutral' else str(reference)
+        if saved and saved['reference'] == expected and not alternate:
+            settings.animchar_status = '此镜头已有保存结果，已恢复；没有重复调用生成。'
+            return
     native, _ = modules()
     prefs = importlib.import_module('AnimCharTools.addons.AnimCharTools.AddonPreferences')
     if not prefs.get_api_key():

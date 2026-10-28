@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import sys
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -13,6 +14,9 @@ from tools.blender_source import load_addon
 addon = load_addon(); addon.register()
 from mmd_lora_studio import animchar, workflow
 from mmd_lora_studio.core import ShotSettings
+result_temp = tempfile.TemporaryDirectory()
+result_patch = patch.object(animchar, 'result_directory', return_value=Path(result_temp.name))
+result_patch.start()
 
 bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete(use_global=False)
 bpy.ops.object.armature_add()
@@ -58,6 +62,22 @@ addon.pose_apply(settings, 'relaxed')
 assert not constraint.mute
 key = animchar.rig_key(rig); rig.location.x += 2
 assert animchar.rig_key(rig) == key
+rig.name = 'Renamed object'; rig.data.name = 'Renamed data block.001'
+assert animchar.rig_key(rig) == key
+saved_json = settings.presets_json
+settings.presets_json = ''
+recovered = animchar.restore_results(settings)
+assert recovered['restored'] == 1 and recovered['total'] == 1
+assert addon.custom_presets(settings)['poses'][name] == json.loads(saved_json)['poses'][name]
+assert next(s for s in addon.dataset_plan(settings) if s.get('asset_slot') == 'half_body:5')['asset_status'] == 'CAPTURED'
+with patch.object(animchar, 'modules', side_effect=AssertionError('Should reuse saved result without account call')):
+    animchar.start_capture(bpy.context, settings, shot, 'synthetic native-result fixture')
+assert not animchar.busy()
+other_scene = bpy.data.scenes.new('New project scene')
+other_scene.collection.objects.link(rig)
+animchar.restore_scene_results(other_scene.ml_settings)
+assert other_scene.ml_settings.armature == rig
+assert len(addon.custom_presets(other_scene.ml_settings)['shot_assets']) == 1
 rig.animation_data_create(); rig.animation_data.action = bpy.data.actions.new('Empty native Action')
 assert not animchar.has_action_channels(rig)
 rig.pose.bones['頭'].keyframe_insert(data_path='rotation_quaternion', frame=1)
@@ -91,3 +111,11 @@ assert sum(name == 'ml.select_shot' for name, _ in layout.calls) == 12
 assert any(name == 'ml.animchar' for name, _ in layout.calls)
 print('ANIMCHAR_WORKFLOW_OK: root/ancestor replay, controller restoration, empty/action guard, missing-pose preflight, read-only 12-slot UI; no network/images')
 addon.unregister()
+from _bpy_restrict_state import RestrictBlend
+with RestrictBlend():
+    addon.register()
+addon.migrate_settings()
+assert len(addon.custom_presets(other_scene.ml_settings)['shot_assets']) == 1
+addon.unregister()
+print('PERSISTENT_RESULTS_OK: renamed data, cleared scene JSON, fresh scene, restricted startup registration; no network/images')
+result_patch.stop(); result_temp.cleanup()

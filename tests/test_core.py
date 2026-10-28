@@ -11,6 +11,16 @@ spec.loader.exec_module(core)
 
 
 class RecipeTests(unittest.TestCase):
+    def test_halfbody05_is_the_documented_hand_on_hip_photo(self):
+        shot = next(s for s in core.recipe() if s['group'] == 'half_body' and s['index'] == 5)
+        self.assertEqual((shot['pose'], shot['expression']), ('hand_hip', 'smile'))
+        self.assertEqual((shot['azimuth'], shot['elevation']), (30, 0))
+        self.assertEqual(shot['camera']['camera_lens'], 75)
+        self.assertEqual(shot['camera']['camera_aspect'], 'PORTRAIT')
+        self.assertEqual(shot['performance']['expression_strength'], .4)
+        self.assertEqual(shot['include_hands'], ['left_wrist', 'right_wrist'])
+        self.assertEqual(len(core.recipe()), 39)
+
     def test_three_views_are_the_default_test_budget(self):
         shots = core.three_view_recipe()
         self.assertEqual([s['view'] for s in shots], ['front', 'side', 'back'])

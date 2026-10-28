@@ -35,6 +35,9 @@ for name, head, tail, parent in [('下半身', (0, 0, 1), (0, 0, 1.1), 'セン�
     bone = rig.data.edit_bones.new(name); bone.head = head; bone.tail = tail; bone.parent = rig.data.edit_bones[parent]
 for name, offset in [('左人指1', 0), ('左中指1', .04), ('左薬指1', .08)]:
     bone = rig.data.edit_bones.new(name); bone.head = (1.1, offset, 1.4); bone.tail = (1.2, offset, 1.4); bone.parent = rig.data.edit_bones['左手首']
+for name, offset in [('右人指1', 0), ('右中指1', .04), ('右薬指1', .08)]:
+    bone = rig.data.edit_bones.new(name); bone.head = (-1.1, offset, 1.4); bone.tail = (-1.2, offset, 1.4)
+    bone.parent = rig.data.edit_bones['右手首']; bone.roll = .63
 bpy.ops.object.mode_set(mode='OBJECT')
 settings.armature = rig
 ik = rig.pose.bones['左ひざ'].constraints.new('IK'); ik.name = 'Leg IK restore check'; ik.chain_count = 2
@@ -243,4 +246,40 @@ for group in ('half_body', 'full_body', 'outfit_detail'):
     assert settings.plan_index == 9
     settings.preview_group = 'portrait'; settings.plan_index = 12
 print('ANIFORGE_PERFORMANCE_CAMERA_OK: native IK / preset switching, slot overrides, 17 deterministic poses, 72 camera fits + 39 linked shots; no renders')
+from mmd_lora_studio.hand_pose import hand_frame
+from mmd_lora_studio.performance import finger_bones, bone_side
+fingers = list(finger_bones(rig))
+addon.restore_seated(rig)
+for bone in rig.pose.bones:
+    bone.matrix_basis = Matrix.Identity(4)
+wrist_baseline = {side: addon.find_bone(rig, side+'_wrist', settings).matrix_basis.copy() for side in ('left', 'right')}
+settings.hand_pose = 'AUTO'
+mirror_positions = {}
+for mirror in ('LEFT', 'RIGHT'):
+    settings.hip_hand = mirror
+    shot = next(s for s in addon.dataset_plan(settings) if s['group'] == 'half_body' and s['index'] == 5)
+    assert shot['azimuth'] == (30 if mirror == 'LEFT' else -30)
+    effective = addon.ShotSettings(settings, shot)
+    addon.pose_apply(effective, 'hand_hip')
+    mirror_positions[mirror] = {side: addon.find_bone(rig, side+'_wrist', settings).head.copy() for side in ('left', 'right')}
+    first = addon.capture_pose(settings)
+    addon.pose_apply(effective, 'hand_hip')
+    assert all(abs(b.matrix_basis[i][j]-first[b.name][i][j]) < .0001 for b in rig.pose.bones for i in range(4) for j in range(4))
+    side = mirror.lower(); wrist = addon.find_bone(rig, side+'_wrist', settings)
+    _, inward, _ = hand_frame(rig, side, wrist, fingers)
+    for bone, kind, segment in fingers:
+        if bone_side(bone) == side and kind != 'thumb':
+            rest = bone.bone.matrix_local.to_quaternion()
+            delta = rest @ bone.matrix_basis.to_quaternion() @ rest.inverted()
+            direction = delta @ (bone.bone.tail_local-bone.bone.head_local).normalized()
+            assert direction.dot(inward) > .01, (mirror, bone.name)
+for side in ('left', 'right'):
+    opposite = 'right' if side == 'left' else 'left'
+    a, b = mirror_positions['LEFT'][side], mirror_positions['RIGHT'][opposite]
+    assert abs(a.x+b.x)<.01 and abs(a.y-b.y)<.01 and abs(a.z-b.z)<.01
+addon.pose_apply(settings, 'relaxed')
+for side, matrix in wrist_baseline.items():
+    wrist = addon.find_bone(rig, side+'_wrist', settings)
+    assert all(abs(wrist.matrix_basis[i][j]-matrix[i][j]) < .00001 for i in range(4) for j in range(4))
+print('HAND_HIP_FIT_OK: mirrored targets/cameras, inward finger flex with rolled bones, repeat and state restoration; no renders')
 addon.unregister()

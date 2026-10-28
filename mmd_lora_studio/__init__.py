@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 8, 1),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 8, 2),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 39-shot LoRA dataset rendering',
     'category': 'Render',
@@ -177,6 +177,10 @@ class MLSettings(bpy.types.PropertyGroup):
     pose_strength: FloatProperty(name='姿势强度', default=1, min=0, max=1)
     head_angles: FloatVectorProperty(name='头部俯仰 / 转向 / 歪头', size=3, default=(0, 0, 0), min=-45, max=45)
     hand_pose: EnumProperty(name='手型模板', items=[('AUTO', '跟随姿势', '', 5), ('KEEP', '保留当前手型', '', 0), ('RELAXED', '轻微放松', '', 1), ('FIST', '握拳', '', 2), ('POINT', '食指指向', '', 3), ('PEACE', '剪刀手', '', 4)], default='AUTO')
+    hip_hand: EnumProperty(name='叉腰侧', items=[('LEFT', '左手叉腰', ''), ('RIGHT', '右手叉腰', '')], default='LEFT')
+    hip_clearance: FloatProperty(name='手部避让边距（肩宽比例）', default=.04, min=0, max=.3)
+    hip_offset: FloatVectorProperty(name='叉腰手偏移（外 / 前 / 上）', size=3, default=(0, 0, 0), min=-1, max=1, description='以肩宽为单位；正值向外、向前、向上')
+    free_hand_offset: FloatVectorProperty(name='垂手偏移（外 / 前 / 上）', size=3, default=(0, 0, 0), min=-1, max=1)
     preset_name: StringProperty(name='新预设名称', description='留空时覆盖当前选中的预设')
     capture_all_keys: BoolProperty(name='保存全部形态键', default=False, description='关闭时仅保存识别出的脸部键，避免绑定体型变化')
     camera_preset: EnumProperty(name='镜头预设', items=lambda self, context: enum_presets(self, 'cameras'))
@@ -538,7 +542,16 @@ class ML_OT_assign_shot(bpy.types.Operator):
 
 
 def dataset_plan(settings):
-    return current_recipe(settings) if settings.dataset_variation == 'CURRENT' else apply_shot_overrides(recipe(), custom_presets(settings))
+    if settings.dataset_variation == 'CURRENT':
+        return current_recipe(settings)
+    shots = apply_shot_overrides(recipe(), custom_presets(settings))
+    if settings.hip_hand == 'RIGHT':
+        for shot in shots:
+            if shot['pose'] == 'hand_hip' and not shot.get('pose_overridden'):
+                shot['azimuth'] = -shot['azimuth']
+                angles = shot['performance']['head_angles']
+                shot['performance'] = dict(shot['performance'], head_angles=[angles[0], -angles[1], -angles[2]])
+    return shots
 
 
 def update_preview_camera(context, settings, meshes, shot):
@@ -756,6 +769,8 @@ class RenderSession:
         effective = ShotSettings(self.settings, shot)
         expression_keys = expression_apply(effective, self.meshes, shot['expression'])
         pose_bones = pose_apply(effective, shot['pose'])
+        from .hand_pose import fit_report
+        self.hand_fit = fit_report(self.settings.armature) if shot['pose'] == 'hand_hip' and shot['pose'] not in custom_presets(self.settings)['poses'] else None
         context.view_layer.update()
         self.prepare_supports(context, shot)
         context.view_layer.update()
@@ -788,7 +803,7 @@ class RenderSession:
         image.with_suffix('.txt').write_text(tags + '\n', encoding='utf-8')
         self.manifest['shots'].append(dict(shot, image=str(image.relative_to(self.folder)), caption=tags,
                                            mapped_shape_keys=expression_keys, mapped_bones=pose_bones,
-                                           pose_requires_review=True, mapped_posture=posture, camera=self.camera_meta, deformation_mode='ARMATURE_STATIC'))
+                                           pose_requires_review=True, mapped_posture=posture, camera=self.camera_meta, hand_fit=self.hand_fit, deformation_mode='ARMATURE_STATIC'))
         self.flush()
 
     def close(self, status, error=''):
@@ -935,6 +950,9 @@ class ML_PT_panel(bpy.types.Panel):
                     box.prop(settings, 'capture_all_keys')
                 else:
                     box.prop(settings, 'head_angles'); box.prop(settings, 'hand_pose')
+                    if settings.pose == 'hand_hip':
+                        box.prop(settings, 'hip_hand'); box.prop(settings, 'hip_clearance')
+                        box.prop(settings, 'hip_offset'); box.prop(settings, 'free_hand_offset')
                 row = box.row(); row.operator('ml.preset', text='应用').action = apply
                 row.operator('ml.preset', text='保存当前').action = save
                 box.operator('ml.preset', text='清空表情' if prop == 'expression' else '恢复静置姿势').action = 'RESET_EXPRESSION' if prop == 'expression' else 'RESET_POSE'

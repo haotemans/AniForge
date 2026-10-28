@@ -280,7 +280,7 @@ SHOT_PLANS = {
         ('俏皮招手', 'wave', 'smile', -18, 2, (0, -5, 4), 'UPPER', ('right_wrist',)),
         ('叉腰自信', 'hand_hip', 'smile', 25, 0, (0, 8, -4), 'UPPER', ('left_wrist',)),
         ('剪刀手半身', 'peace_face', 'wink', 15, 3, (0, 4, -8), 'UPPER', ('right_wrist',)),
-        ('双手身前', 'hands_front', 'smile', -12, 3, (2, -4, 3), 'UPPER', ('left_wrist', 'right_wrist')),
+        ('单手叉腰·自信浅笑', 'hand_hip', 'smile', 30, 0, (0, 12, 0), 'UPPER', ('left_wrist', 'right_wrist')),
         ('猫爪卖萌', 'cat_paws', 'happy', 8, 4, (2, 2, -7), 'UPPER', ('left_wrist', 'right_wrist')),
         ('俏皮敬礼', 'salute', 'smile', -25, 0, (-2, -8, 3), 'UPPER', ('right_wrist',)),
         ('单手介绍', 'presenting', 'neutral', 32, 0, (0, 10, 0), 'UPPER', ('right_wrist',)),
@@ -327,6 +327,9 @@ def recipe():
                                       'camera_azimuth': 0, 'camera_elevation': 0,
                                       'camera_roll': 0, 'camera_zoom': 1, 'camera_shift_x': 0, 'camera_shift_y': 0,
                                       'camera_target_offset': [0, 0, 0], 'margin': 1.12}))
+            if group == 'half_body' and index == 5:
+                shots[-1]['camera']['camera_lens'] = 75
+                shots[-1]['performance']['expression_strength'] = .4
     return shots
 
 

@@ -275,6 +275,10 @@ def pose_apply(settings, name):
                 bone.matrix_basis = blend_basis(Matrix(values), strength)
                 changed.append(bone.name)
     else:
+        if name == 'hand_hip':
+            controlled = [b for side in ('left', 'right') for part in ('arm', 'elbow', 'wrist')
+                          if (b := find_bone(rig, side+'_'+part, settings))]
+            remember_pose_state(rig, controlled+[b for b, _, _ in finger_bones(rig)])
         managed = {key for values in POSE_DIRECTIONS.values() for key in values} | {'head', 'upper_body', 'upper_body2', 'lower_body'}
         for key in managed:
             bone = find_bone(rig, key, settings)
@@ -286,6 +290,8 @@ def pose_apply(settings, name):
         for key, angles in POSE_BODY.get(name, {}).items():
             bone = find_bone(rig, key, settings)
             if bone:
+                if name == 'hand_hip' and getattr(settings, 'hip_hand', 'LEFT') == 'RIGHT':
+                    angles = (angles[0], -angles[1], -angles[2])
                 rotate_character(bone, angles, rig, front, strength)
                 changed.append(bone.name)
         side = Vector((math.cos(front), math.sin(front), 0))
@@ -294,6 +300,8 @@ def pose_apply(settings, name):
         if name in SEATED_POSES:
             changed += apply_seated(settings, name, side, forward, to_rig)
         for key, direction in POSE_DIRECTIONS.get(name, {}).items():
+            if name == 'hand_hip':
+                continue
             bone = find_bone(rig, key, settings)
             if bone:
                 x, y, z = direction
@@ -322,7 +330,10 @@ def pose_apply(settings, name):
                 target = head_point + unit*(side*x+forward*y+Vector((0, 0, z)))
                 pole = side*(1 if hand == 'left' else -1) + Vector((0, 0, -1)) + forward*.2
                 changed += place_hand(settings, hand, target, pole, strength)
-    if settings.hand_pose != 'KEEP':
+        if name == 'hand_hip':
+            from .hand_pose import apply_hand_hip
+            changed += apply_hand_hip(settings)
+    if settings.hand_pose != 'KEEP' and (custom is not None or name != 'hand_hip'):
         fingers = list(finger_bones(rig))
         for bone, finger, segment in fingers:
             mode = settings.hand_pose

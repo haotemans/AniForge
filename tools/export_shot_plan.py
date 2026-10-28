@@ -28,7 +28,8 @@ for group, label in zip(core.GROUPS, ('肖像', '半身', '全身', '穿着服�
 lines += ['## 姿势设计参考', '',
           '- [CLIP STUDIO：动作线、姿势平衡与节奏](https://www.clipstudio.net/how-to-draw/archives/156164)',
           '- [CLIP STUDIO TIPS：肩胯反向倾斜、构图与镜头](https://tips.clip-studio.com/en-us/articles/6073)', '',
-          '内置模板为程序化设计，不包含第三方姿势文件。用户已有 VPD 可导入并保存，按实际模型检查手型和服装。', '']
+          '内置模板为程序化设计，不包含第三方姿势文件。用户已有 VPD 可导入并保存，按实际模型检查手型和服装。', '',
+          '半身05使用单手叉腰、75 mm、平视30°、0.4微笑强度；选择右手叉腰时镜像默认相机与头部角度。新导入的本地比心·胸前使用半身03，旧覆盖可在输出页恢复默认。', '']
 args.output.parent.mkdir(parents=True, exist_ok=True)
 args.output.write_text('\n'.join(lines), encoding='utf-8')
 print(args.output)

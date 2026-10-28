@@ -8,10 +8,10 @@ from pathlib import Path
 from .core import normalized_name
 
 REFERENCE_SLOTS = {
-    'idol_peace': ('偶像·脸侧比耶', 'portrait:3', ['right_wrist']),
+    'idol_peace': ('偶像·脸侧比耶', 'portrait:5', ['right_wrist']),
     'idol_turn': ('偶像·回身叉腰', 'full_body:7', []),
     'idol_one_leg': ('偶像·单腿元气', 'full_body:5', []),
-    'heart_face': ('比心·脸前', 'portrait:5', ['left_wrist', 'right_wrist']),
+    'heart_face': ('比心·脸前', 'portrait:8', ['left_wrist', 'right_wrist']),
     'heart_chest': ('比心·胸前', 'half_body:5', ['left_wrist', 'right_wrist']),
     'heart_arms': ('比心·双臂', 'half_body:6', ['left_wrist', 'right_wrist']),
 }

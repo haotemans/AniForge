@@ -229,5 +229,18 @@ configure_camera(bpy.context, settings, meshes, camera, {'group': 'portrait', 'a
 tip = rig.matrix_world @ rig.pose.bones['左人指1'].tail
 projected = world_to_camera_view(scene, camera, tip)
 assert 0 <= projected.x <= 1 and 0 <= projected.y <= 1 and projected.z > 0
+# Clamp on property changes and file migration, before panel drawing or an
+# operator can look up an absent slot in a nine-photo group.
+settings.preview_group = 'portrait'; settings.plan_index = 12
+assert settings.plan_index == 12
+for group in ('half_body', 'full_body', 'outfit_detail'):
+    settings.preview_group = group
+    assert settings.plan_index == 9
+    settings.plan_index = 12
+    assert settings.plan_index == 9
+    settings['plan_index'] = 12
+    addon.migrate_settings()
+    assert settings.plan_index == 9
+    settings.preview_group = 'portrait'; settings.plan_index = 12
 print('ANIFORGE_PERFORMANCE_CAMERA_OK: native IK / preset switching, slot overrides, 17 deterministic poses, 72 camera fits + 39 linked shots; no renders')
 addon.unregister()

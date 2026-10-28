@@ -154,6 +154,12 @@ def toon_material(source, style, settings=None):
     return mat
 
 
+def clamp_plan_index(settings, _context=None):
+    count = sum(shot['group'] == settings.preview_group for shot in recipe())
+    if count and settings.plan_index > count:
+        settings.plan_index = count
+
+
 class MLSettings(bpy.types.PropertyGroup):
     armature: PointerProperty(name='角色骨架', type=bpy.types.Object, poll=lambda self, obj: obj.type == 'ARMATURE')
     style: EnumProperty(name='游戏风格', items=[(k, v[0], '风格近似预设，非官方着色器') for k, v in STYLES.items()])
@@ -162,7 +168,7 @@ class MLSettings(bpy.types.PropertyGroup):
     trigger: StringProperty(name='角色触发词', default='my_character')
     tags: StringProperty(name='附加标签', default='anime style, simple background')
     resolution: IntProperty(name='分辨率', default=1024, min=256, max=4096)
-    preview_group: EnumProperty(name='预览构图', items=[(v, label, '') for v, label in zip(GROUPS, ('肖像', '半身', '全身', '衣服细节'))])
+    preview_group: EnumProperty(name='预览构图', items=[(v, label, '') for v, label in zip(GROUPS, ('肖像', '半身', '全身', '衣服细节'))], update=clamp_plan_index)
     front: FloatProperty(name='角色正面角度', default=0, min=-180, max=180, description='0 表示朝向世界 -Y；90 表示朝向 +X')
     margin: FloatProperty(name='构图留白', default=1.18, min=1.02, max=2)
     expression: EnumProperty(name='表情', items=lambda self, context: enum_presets(self, 'expressions'))
@@ -186,7 +192,7 @@ class MLSettings(bpy.types.PropertyGroup):
     camera_aspect: EnumProperty(name='画幅', items=[('SQUARE', '1:1 方形', ''), ('PORTRAIT', '3:4 竖幅', ''), ('LANDSCAPE', '4:3 横幅', '')], default='SQUARE')
     portrait_focus: EnumProperty(name='肖像范围', items=[('HEAD', '头肩（按脸部定位）', ''), ('FACE', '脸部特写', '')], default='HEAD')
     dataset_variation: EnumProperty(name='39 张拍摄方案', items=[('CYCLE', '二次元姿势 / 表情 / 镜头联动', '每张使用编排的手势、表情、头部与镜头'), ('CURRENT', '当前姿势 / 表情 / 镜头参数', '沿用当前控制，按 12 肖像 + 其他各 9 个目标')], default='CYCLE')
-    plan_index: IntProperty(name='组内镜头', default=1, min=1, max=12)
+    plan_index: IntProperty(name='组内镜头', default=1, min=1, max=12, update=clamp_plan_index)
     pose_folder: StringProperty(name='本地 VPD 目录', subtype='DIR_PATH')
     pose_import_scale: FloatProperty(name='VPD 导入比例', default=.08, min=.0001, max=10)
     pose_folder_report: StringProperty(default='')
@@ -961,11 +967,6 @@ class ML_PT_panel(bpy.types.Panel):
             col.operator('ml.preview', text='单张预览（当前选择）')
             col.separator(); col.prop(settings, 'dataset_variation')
             box = col.box(); box.label(text='肖像 12 · 半身 9 · 全身 9 · 服装 9')
-            # Index bounds depend on the selected shot group; reset invalid
-            # indices when switching back from portraits to a nine-shot group.
-            group_count = len([s for s in dataset_plan(settings) if s['group'] == settings.preview_group])
-            if settings.plan_index > group_count:
-                settings.plan_index = group_count
             box.prop(settings, 'plan_index')
             shot = next(s for s in dataset_plan(settings) if s['group'] == settings.preview_group and s['index'] == settings.plan_index)
             box.label(text=shot['title'])
@@ -995,6 +996,7 @@ def migrate_settings(_=None):
     for scene in bpy.data.scenes:
         if scene.ml_settings.get('ui_section') == 4:
             scene.ml_settings.ui_section = 'PERFORMANCE'
+        clamp_plan_index(scene.ml_settings)
 
 
 def register():

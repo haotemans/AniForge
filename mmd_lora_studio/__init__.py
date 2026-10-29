@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 10, 3),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 10, 4),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 T-pose views',
     'category': 'Render',
@@ -9,6 +9,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic
 
 import bpy
 from bpy.props import StringProperty, EnumProperty, PointerProperty, IntProperty, FloatProperty, BoolProperty, FloatVectorProperty
@@ -669,22 +670,46 @@ class ML_OT_render(bpy.types.Operator):
     test_only: BoolProperty(name='仅三视图测试', default=True)
     _timer = None
     _session = None
+    _in_step = False
+    _finished = False
+    _next_step = 0.0
 
     @classmethod
     def poll(cls, context):
         return not context.scene.ml_settings.running
 
     def finish(self, context, status, error=''):
-        if self._timer:
-            context.window_manager.event_timer_remove(self._timer); self._timer = None
-        if self._session:
-            self._session.close(status, error)
-        context.scene.ml_settings.progress = f'{status}: {self.index}/{len(self.shots)}'
-        context.window_manager.progress_end()
+        if self._finished:
+            return True
+        self._finished = True
+        timer, self._timer = self._timer, None
+        session, self._session = self._session, None
+        cleanup_error = ''
+        try:
+            if timer is not None:
+                try:
+                    context.window_manager.event_timer_remove(timer)
+                except (ReferenceError, RuntimeError, ValueError):
+                    pass  # The window may already have removed its timer.
+            if session is not None:
+                session.close(status, error)
+        except Exception as exc:
+            cleanup_error = str(exc)
+            status = 'failed'
+        finally:
+            context.scene.ml_settings.running = False
+            context.scene.ml_settings.progress = f'{status}: {self.index}/{len(self.shots)}'
+            context.window_manager.progress_end()
+        if cleanup_error:
+            self.report({'ERROR'}, '渲染状态清理失败：'+cleanup_error)
+        return not cleanup_error
 
     def execute(self, context):
         self.index = 0
+        self._timer = None
         self._session = None
+        self._finished = self._in_step = False
+        self._next_step = 0.0
         settings = context.scene.ml_settings
         self.shots = three_view_recipe(settings.preview_group) if self.test_only else dataset_plan(settings)
         try:
@@ -694,17 +719,25 @@ class ML_OT_render(bpy.types.Operator):
             if bpy.app.background:
                 for shot in self.shots:
                     self._session.render(context, shot); self.index += 1
-                self.finish(context, 'complete'); return {'FINISHED'}
+                return {'FINISHED'} if self.finish(context, 'complete') else {'CANCELLED'}
             self._timer = context.window_manager.event_timer_add(0.25, window=context.window)
+            self._next_step = monotonic()+.25
             context.window_manager.modal_handler_add(self)
             return {'RUNNING_MODAL'}
         except Exception as exc:
             self.finish(context, 'failed', str(exc)); self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
 
     def modal(self, context, event):
+        if self._finished:
+            return {'CANCELLED'}
         if event.type == 'ESC':
             self.finish(context, 'cancelled'); return {'CANCELLED'}
-        if event.type == 'TIMER' and event.timer == self._timer:
+        # Blender Event has no timer property. Gate timer notifications by our
+        # own cadence so other add-ons' timers cannot accelerate this batch.
+        if event.type == 'TIMER' and self._timer is not None and not self._in_step:
+            if monotonic() < self._next_step:
+                return {'RUNNING_MODAL'}
+            self._in_step = True
             try:
                 shot = self.shots[self.index]
                 context.scene.ml_settings.progress = f'{self.index + 1}/{len(self.shots)} {shot["group"]}'
@@ -712,12 +745,17 @@ class ML_OT_render(bpy.types.Operator):
                 context.window_manager.progress_update(self.index)
                 if self.index == len(self.shots):
                     folder = str(self._session.folder)
-                    self.finish(context, 'complete'); self.report({'INFO'}, '完成：' + folder)
+                    if not self.finish(context, 'complete'):
+                        return {'CANCELLED'}
+                    self.report({'INFO'}, '完成：' + folder)
                     return {'FINISHED'}
                 if context.area:
                     context.area.tag_redraw()
             except Exception as exc:
                 self.finish(context, 'failed', str(exc)); self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
+            finally:
+                self._in_step = False
+                self._next_step = monotonic()+.25
         return {'RUNNING_MODAL'}
 
     def cancel(self, context):

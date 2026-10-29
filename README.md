@@ -1,6 +1,6 @@
 # AniForge · T Pose 四视图渲染
 
-Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前版本 **0.10.3**。
+Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前版本 **0.10.4**。
 
 每个角色只使用一个 T Pose，面部保持自然状态。正式输出固定为 **16 张**：
 
@@ -15,7 +15,7 @@ Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前�
 
 ## 安装与使用
 
-运行 `python tools/build_zip.py`，在 Blender 偏好设置中从磁盘安装 `dist/mmd_lora_studio-0.10.3.zip`。升级时关闭 Blender，用新包替换旧的 `mmd_lora_studio` 文件夹，避免残留旧模块；重新启动后生效。
+运行 `python tools/build_zip.py`，在 Blender 偏好设置中从磁盘安装 `dist/mmd_lora_studio-0.10.4.zip`。升级时关闭 Blender，用新包替换旧的 `mmd_lora_studio` 文件夹，避免残留旧模块；重新启动后生效。
 
 1. 使用 MMD Tools 导入 PMX/PMD，打开侧栏 **MMD LoRA**。
 2. 展开 **1 角色与材质**：选择角色骨架，或选中角色网格后点击吸管识别，选择后自动创建或复用一个相机并切换为白底，选择游戏风格并应用三渲二。贴图修复和材质微调默认收起。
@@ -42,6 +42,7 @@ python -m unittest discover -s tests
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_static_render.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_tpose.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_output.py
+& 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_modal.py
 ```
 
 需要出图测试时，默认仅对指定模型渲染正面、侧面、背面各一张：

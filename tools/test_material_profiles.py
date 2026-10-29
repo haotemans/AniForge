@@ -26,10 +26,7 @@ settings.resolution = args.resolution
 output = Path(args.output) / args.game
 output.mkdir(parents=True, exist_ok=True)
 report = {'game': args.game, 'resolution': args.resolution, 'status': 'running'}
-shots = [dict(group='portrait', index=i+1, azimuth=a, expression='neutral', pose='relaxed') for i, a in enumerate((-40, 0, 40))]
-shots += [dict(group='portrait', index=4, azimuth=0, expression='blink', pose='relaxed'),
-          dict(group='portrait', index=5, azimuth=0, expression='smile', pose='relaxed'),
-          dict(group='full_body', index=6, azimuth=0, expression='neutral', pose='relaxed')]
+shots = addon.three_view_recipe('portrait') + addon.three_view_recipe('full_body')
 
 for enabled, name in [(False, 'before'), (True, 'after')]:
     settings.material_profiles = enabled

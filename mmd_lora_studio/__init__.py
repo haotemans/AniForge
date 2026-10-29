@@ -1,27 +1,23 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 9, 1),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 10, 0),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
-    'description': 'MMD toon materials, AnimChar shot workflow and 42-photo datasets',
+    'description': 'MMD toon materials and 16 T-pose views',
     'category': 'Render',
 }
 
 import json
-import math
 from datetime import datetime
 from pathlib import Path
 
 import bpy
 from bpy.props import StringProperty, EnumProperty, PointerProperty, IntProperty, FloatProperty, BoolProperty, FloatVectorProperty
 from bpy_extras.io_utils import ImportHelper, ExportHelper
-from mathutils import Vector, Matrix
+from mathutils import Vector
 
-from .core import (STYLES, GROUPS, MORPHS, BONES, POSE_ROTATIONS, POSE_DIRECTIONS, POSE_LABELS,
-                   EXPRESSION_LABELS, SEATED_POSES, ShotSettings, current_recipe, apply_shot_overrides, resolve_shot_assets, require_shot_asset, dataset_coverage, recipe, three_view_recipe, caption, safe_name, write_json)
+from .core import STYLES, GROUPS, GROUP_LABELS, BONES, recipe, three_view_recipe, dataset_coverage, caption, safe_name, write_json, validate_camera_library
 from .material_profiles import material_role, alpha_image, face_light, hair_color
-from .performance import (aliases, find_bone, shape_blocks, custom_presets, store_presets, enum_presets,
-                          expression_apply, pose_apply, capture_expression, capture_pose, restore_seated, SEATED_STATE)
-from .camera import configure_camera, capture_camera, camera_apply, resolution, CAMERA_FIELDS
-from . import animchar, workflow
+from .static_pose import find_bone, shape_blocks, apply_tpose, neutralize_face, CharacterState, has_animation
+from .camera import configure_camera, capture_camera, camera_apply, resolution
 
 
 def model_meshes(settings):
@@ -156,45 +152,39 @@ def toon_material(source, style, settings=None):
 
 
 def clamp_plan_index(settings, _context=None):
-    count = sum(shot['group'] == settings.preview_group for shot in recipe())
-    if count and settings.plan_index > count:
-        settings.plan_index = count
-    if _context is not None:
-        settings.animchar_reference = ''
-        settings.animchar_prompt = ''
+    if settings.plan_index > 4:
+        settings.plan_index = 4
 
 
-def armature_changed(settings, _context):
-    animchar.restore_scene_results(settings)
+_CAMERA_ENUM_CACHE = {}
+
+
+def camera_library(settings):
+    return validate_camera_library(json.loads(settings.camera_presets_json)) if settings.camera_presets_json else {'schema_version': 4, 'cameras': {}}
+
+
+def camera_items(settings, context):
+    names = tuple(camera_library(settings)['cameras'])
+    if names not in _CAMERA_ENUM_CACHE:
+        _CAMERA_ENUM_CACHE[names] = [('AUTO', '当前相机参数', '')]+[(n, n, '') for n in names if n != 'AUTO']
+    return _CAMERA_ENUM_CACHE[names]
 
 
 class MLSettings(bpy.types.PropertyGroup):
-    armature: PointerProperty(name='角色骨架', type=bpy.types.Object, poll=lambda self, obj: obj.type == 'ARMATURE', update=armature_changed)
+    armature: PointerProperty(name='角色骨架', type=bpy.types.Object, poll=lambda self, obj: obj.type == 'ARMATURE')
     style: EnumProperty(name='游戏风格', items=[(k, v[0], '风格近似预设，非官方着色器') for k, v in STYLES.items()])
     output: StringProperty(name='输出目录', subtype='DIR_PATH', default='//lora_dataset')
     textures: StringProperty(name='贴图目录', subtype='DIR_PATH')
     trigger: StringProperty(name='角色触发词', default='my_character')
     tags: StringProperty(name='附加标签', default='anime style, simple background')
     resolution: IntProperty(name='分辨率', default=1024, min=256, max=4096)
-    preview_group: EnumProperty(name='预览构图', items=[(v, label, '') for v, label in zip(GROUPS, ('肖像', '半身', '全身', '衣服细节'))], update=clamp_plan_index)
+    preview_group: EnumProperty(name='取景范围', items=[(v, label, '') for v, label in GROUP_LABELS.items()])
+    plan_index: IntProperty(name='视角（1正 / 2左 / 3右 / 4背）', default=1, min=1, max=4, update=clamp_plan_index)
     front: FloatProperty(name='角色正面角度', default=0, min=-180, max=180, description='0 表示朝向世界 -Y；90 表示朝向 +X')
     margin: FloatProperty(name='构图留白', default=1.18, min=1.02, max=2)
-    expression: EnumProperty(name='表情', items=lambda self, context: enum_presets(self, 'expressions'))
-    pose: EnumProperty(name='姿势', items=lambda self, context: enum_presets(self, 'poses'))
-    expression_strength: FloatProperty(name='表情强度', default=1, min=0, max=1)
-    pose_strength: FloatProperty(name='姿势强度', default=1, min=0, max=1)
-    head_angles: FloatVectorProperty(name='头部俯仰 / 转向 / 歪头', size=3, default=(0, 0, 0), min=-45, max=45)
-    hand_pose: EnumProperty(name='手型模板', items=[('AUTO', '跟随姿势', '', 5), ('KEEP', '保留当前手型', '', 0), ('RELAXED', '轻微放松', '', 1), ('FIST', '握拳', '', 2), ('POINT', '食指指向', '', 3), ('PEACE', '剪刀手', '', 4)], default='AUTO')
-    hip_hand: EnumProperty(name='叉腰侧', items=[('LEFT', '左手叉腰', ''), ('RIGHT', '右手叉腰', '')], default='LEFT')
-    hip_clearance: FloatProperty(name='手部避让边距（肩宽比例）', default=.02, min=0, max=.3)
-    hip_offset: FloatVectorProperty(name='叉腰手偏移（外 / 前 / 上）', size=3, default=(0, 0, 0), min=-1, max=1, description='以肩宽为单位；正值向外、向前、向上')
-    free_hand_offset: FloatVectorProperty(name='垂手偏移（外 / 前 / 上）', size=3, default=(0, 0, 0), min=-1, max=1)
-    preset_name: StringProperty(name='新预设名称', description='留空时覆盖当前选中的预设')
-    capture_all_keys: BoolProperty(name='保存全部形态键', default=False, description='关闭时仅保存识别出的脸部键，避免绑定体型变化')
-    camera_preset: EnumProperty(name='镜头预设', items=lambda self, context: enum_presets(self, 'cameras'))
     camera_projection: EnumProperty(name='投影', items=[('ORTHO', '正交', ''), ('PERSP', '透视', '')], default='ORTHO')
     camera_lens: FloatProperty(name='焦距 (mm)', default=85, min=20, max=200)
-    camera_azimuth: FloatProperty(name='环绕角度 (°)', default=0, min=-180, max=180)
+    camera_azimuth: FloatProperty(name='环绕偏移 (°)', default=0, min=-180, max=180)
     camera_elevation: FloatProperty(name='俯仰角度 (°)', default=0, min=-60, max=60)
     camera_roll: FloatProperty(name='画面倾斜 (°)', default=0, min=-45, max=45)
     camera_zoom: FloatProperty(name='构图放大', default=1, min=.5, max=2)
@@ -203,29 +193,16 @@ class MLSettings(bpy.types.PropertyGroup):
     camera_target_offset: FloatVectorProperty(name='对焦偏移（身高比例）', size=3, default=(0, 0, 0), min=-.5, max=.5)
     camera_aspect: EnumProperty(name='画幅', items=[('SQUARE', '1:1 方形', ''), ('PORTRAIT', '3:4 竖幅', ''), ('LANDSCAPE', '4:3 横幅', '')], default='SQUARE')
     portrait_focus: EnumProperty(name='肖像范围', items=[('HEAD', '头肩（按脸部定位）', ''), ('FACE', '脸部特写', '')], default='HEAD')
-    dataset_variation: EnumProperty(name='42 张拍摄方案', items=[('CYCLE', '按 PR 编排 / AnimChar 动作', '肖像、半身由 AnimChar 动作绑定，逐镜头验收'), ('CURRENT', '当前姿势 / 表情 / 镜头参数', '沿用当前控制，保留 12 肖像 + 12 半身 + 9 全身 + 9 服装位置')], default='CYCLE')
-    plan_index: IntProperty(name='组内镜头', default=1, min=1, max=12, update=clamp_plan_index)
-    pose_folder: StringProperty(name='本地 VPD 目录', subtype='DIR_PATH')
-    pose_import_scale: FloatProperty(name='VPD 导入比例', default=.08, min=.0001, max=10)
-    pose_folder_report: StringProperty(default='')
-    slot_left_hand: BoolProperty(name='保留左手势入镜', default=False)
-    slot_right_hand: BoolProperty(name='保留右手势入镜', default=False)
-    slot_seat: BoolProperty(name='此镜头需要坐凳', default=False)
-    developer_tools: BoolProperty(name='显示开发用三视图测试', default=False)
-    mapping_report: StringProperty(default='')
+    camera_name: StringProperty(name='镜头预设名称', maxlen=80)
+    camera_presets_json: StringProperty(default='')
+    camera_preset: EnumProperty(name='镜头预设', items=camera_items)
     material_profiles: BoolProperty(name='头发 / 脸部优化', default=True)
     hair_highlight_strength: FloatProperty(name='头发高光层强度', default=.22, min=0, max=1)
     face_fill: FloatProperty(name='脸部柔和补光', default=.92, min=.5, max=1)
     face_shadow_strength: FloatProperty(name='脸部阴影层强度', default=.3, min=0, max=1)
-    presets_json: StringProperty(default='')
     running: BoolProperty(default=False, options={'SKIP_SAVE'})
     progress: StringProperty(default='等待开始', options={'SKIP_SAVE'})
-    animchar_reference: StringProperty(name='此镜头参考图', subtype='FILE_PATH', default='')
-    animchar_prompt: StringProperty(name='动作描述', default='')
-    animchar_rebuild: BoolProperty(name='重新生成，不复用缓存', default=False)
-    animchar_review_note: StringProperty(name='待修说明', default='手型、穿模或构图需要修正。', maxlen=256)
-    animchar_status: StringProperty(default='', options={'SKIP_SAVE'})
-    ui_section: EnumProperty(name='功能', items=[('MATERIAL', '材质', '', 0), ('PERFORMANCE', '高级姿势', '', 1), ('CAMERA', '高级镜头', '', 2), ('RENDER', '输出', '', 3), ('SHOTS', '镜头编排', '', 5)], default='SHOTS')
+    ui_section: EnumProperty(name='功能', items=[('MATERIAL', '材质', '', 0), ('CAMERA', '镜头', '', 2), ('RENDER', '输出', '', 3), ('SHOTS', '四视图', '', 5)], default='SHOTS')
 
 
 class ML_OT_materials(bpy.types.Operator):
@@ -336,253 +313,25 @@ class ML_OT_assign_textures(bpy.types.Operator):
             self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
 
 
-class ML_OT_preset(bpy.types.Operator):
-    bl_idname = 'ml.preset'; bl_label = '表情 / 姿势'; bl_options = {'REGISTER', 'UNDO'}
-    action: EnumProperty(items=[(v, v, '') for v in ('EXPRESSION', 'POSE', 'SAVE_EXPRESSION', 'SAVE_POSE', 'CAMERA', 'SAVE_CAMERA', 'RESET_EXPRESSION', 'RESET_POSE')])
-
-    def execute(self, context):
-        settings = context.scene.ml_settings
-        try:
-            meshes = model_meshes(settings)
-            saved = custom_presets(settings)
-            if self.action in {'EXPRESSION', 'RESET_EXPRESSION'}:
-                if self.action == 'RESET_EXPRESSION':
-                    settings.expression = 'neutral'
-                changed = expression_apply(settings, meshes, 'neutral' if self.action == 'RESET_EXPRESSION' else settings.expression)
-                self.report({'INFO'}, f'表情映射 {len(changed)} 个形态键；无映射时为中性。')
-            elif self.action == 'POSE':
-                changed = pose_apply(settings, settings.pose)
-                self.report({'INFO'}, f'姿势映射 {len(changed)} 根骨骼；请检查 IK 和骨骼轴向。')
-            elif self.action == 'RESET_POSE':
-                restore_seated(settings.armature)
-                for bone in settings.armature.pose.bones:
-                    bone.matrix_basis = Matrix.Identity(4)
-                settings.head_angles = (0, 0, 0)
-            elif self.action == 'CAMERA':
-                preset = saved['cameras'].get(settings.camera_preset)
-                if preset:
-                    camera_apply(settings, preset)
-            elif self.action.startswith('SAVE'):
-                category = {'SAVE_EXPRESSION': 'expressions', 'SAVE_POSE': 'poses', 'SAVE_CAMERA': 'cameras'}[self.action]
-                prop = {'expressions': 'expression', 'poses': 'pose', 'cameras': 'camera_preset'}[category]
-                name = settings.preset_name.strip() or getattr(settings, prop)
-                if len(name) > 80:
-                    raise ValueError('预设名称请控制在 80 字符以内。')
-                if category == 'cameras' and name == 'AUTO':
-                    raise ValueError('请为镜头填写一个新的预设名称。')
-                saved[category][name] = capture_expression(settings, meshes) if category == 'expressions' else capture_pose(settings) if category == 'poses' else capture_camera(settings)
-                store_presets(settings, saved)
-                setattr(settings, prop, name)
-                if category == 'expressions':
-                    settings.expression_strength = 1
-                if category == 'poses':
-                    settings.pose_strength = 1; settings.hand_pose = 'KEEP'; settings.head_angles = (0, 0, 0)
-            if self.action.startswith('SAVE'):
-                self.report({'INFO'}, '已保存命名预设；可随 .blend 保存或导出 JSON。')
-            context.view_layer.update()
-            return {'FINISHED'}
-        except Exception as exc:
-            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
-
-
-class ML_OT_export_presets(bpy.types.Operator, ExportHelper):
-    bl_idname = 'ml.export_presets'; bl_label = '导出预设 JSON'
-    filename_ext = '.json'
-    filter_glob: StringProperty(default='*.json', options={'HIDDEN'})
-
-    def execute(self, context):
-        try:
-            write_json(self.filepath, custom_presets(context.scene.ml_settings))
-            self.report({'INFO'}, '预设已导出。'); return {'FINISHED'}
-        except Exception as exc:
-            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
-
-
-class ML_OT_import_presets(bpy.types.Operator, ImportHelper):
-    bl_idname = 'ml.import_presets'; bl_label = '导入预设 JSON'; bl_options = {'REGISTER', 'UNDO'}
-    filename_ext = '.json'
-    filter_glob: StringProperty(default='*.json', options={'HIDDEN'})
-
-    def execute(self, context):
-        try:
-            from .core import validate_library
-            path = Path(self.filepath)
-            if path.stat().st_size > 8*1024*1024:
-                raise ValueError('预设文件不能超过 8 MiB。')
-            incoming = validate_library(json.loads(path.read_text(encoding='utf-8-sig')))
-            saved = custom_presets(context.scene.ml_settings)
-            for category in ('expressions', 'poses', 'cameras', 'bone_map', 'pose_options', 'shot_overrides', 'shot_assets', 'legacy_shot_overrides'):
-                saved[category].update(incoming[category])
-            animchar.persist_results(context.scene.ml_settings, saved)
-            store_presets(context.scene.ml_settings, saved)
-            self.report({'INFO'}, '已导入预设；同名项目已更新。'); return {'FINISHED'}
-        except Exception as exc:
-            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
-
-
-class ML_OT_vpd(bpy.types.Operator, ImportHelper):
-    bl_idname = 'ml.import_vpd'; bl_label = '导入 VPD 并保存姿势'; bl_options = {'REGISTER', 'UNDO'}
-    filename_ext = '.vpd'
-    filter_glob: StringProperty(default='*.vpd', options={'HIDDEN'})
-    scale: FloatProperty(name='MMD 姿势缩放', default=.08, min=.0001, max=10)
-
-    def execute(self, context):
-        settings = context.scene.ml_settings
-        try:
-            from .pose_library import read_vpd
-            meshes = model_meshes(settings)
-            report = read_vpd(settings, meshes, self.filepath, settings.preset_name.strip() or None, self.scale)
-            name = report['name']
-            settings.pose = name; settings.pose_strength = 1; settings.hand_pose = 'KEEP'; settings.head_angles = (0, 0, 0)
-            if report['has_expression']:
-                settings.expression = name; settings.expression_strength = 1
-            self.report({'INFO'}, 'VPD 已导入并保存为：' + name)
-            return {'FINISHED'}
-        except Exception as exc:
-            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
-
-
-class ML_OT_mapping(bpy.types.Operator):
-    bl_idname = 'ml.mapping_report'; bl_label = '检查骨骼与表情映射'
-
-    def execute(self, context):
-        settings = context.scene.ml_settings
-        try:
-            from .core import EXPRESSION_LABELS
-            meshes = model_meshes(settings)
-            before = [(key, key.value) for _, keys in shape_blocks(meshes) for key in keys]
-            old_strength = settings.expression_strength
-            try:
-                settings.expression_strength = 1
-                expressions = {name: expression_apply(settings, meshes, name) for name in EXPRESSION_LABELS}
-            finally:
-                settings.expression_strength = old_strength
-                for key, value in before:
-                    key.value = value
-            report = {'bones': {key: bone.name if (bone := find_bone(settings.armature, key, settings)) else None for key in BONES},
-                      'expressions': expressions,
-                      'constraints': [bone.name for bone in settings.armature.pose.bones if any(not c.mute for c in bone.constraints)]}
-            settings.mapping_report = json.dumps(report, ensure_ascii=False)
-            text = bpy.data.texts.get('AniForge Mapping Report') or bpy.data.texts.new('AniForge Mapping Report')
-            text.clear(); text.write(json.dumps(report, ensure_ascii=False, indent=2))
-            missing = [name for name, value in report['bones'].items() if not value]
-            self.report({'INFO'}, '映射报告已写入文本编辑器；缺失骨骼：' + (', '.join(missing) or '无'))
-            return {'FINISHED'}
-        except Exception as exc:
-            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
-
-
-class ML_OT_pose_folder(bpy.types.Operator):
-    bl_idname = 'ml.import_pose_folder'; bl_label = '导入本地单人姿势并安排镜头'; bl_options = {'REGISTER', 'UNDO'}
-    assign_references: BoolProperty(name='安排已识别的参考动作', default=True)
-
-    def execute(self, context):
-        from .pose_library import scan_pose_folder, read_vpd, REFERENCE_SLOTS, REFERENCE_CAMERA_OFFSETS
-        settings = context.scene.ml_settings
-        before_library = settings.presets_json
-        rig = settings.armature
-        if not rig:
-            self.report({'ERROR'}, '请先指定角色骨架。'); return {'CANCELLED'}
-        pose = [(bone, bone.rotation_mode, bone.matrix_basis.copy()) for bone in rig.pose.bones]
-        mutes = [(c, c.mute) for b in rig.pose.bones for c in b.constraints]
-        seated = rig.get(SEATED_STATE)
-        shapes = []
-        try:
-            meshes = model_meshes(settings)
-            shapes = [(key, key.value) for _, keys in shape_blocks(meshes) for key in keys]
-            if not settings.pose_folder.strip():
-                raise ValueError('请先选择本地 VPD 目录。')
-            entries = scan_pose_folder(bpy.path.abspath(settings.pose_folder))
-            singles = [entry for entry in entries if not entry['paired']]
-            if not singles:
-                raise ValueError('目录中没有可导入的单人 VPD。')
-            names = [entry['name'] for entry in singles]
-            if len(set(names)) != len(names):
-                raise ValueError('不同目录存在同名姿势，请按姿势包分别导入。')
-            reports = []
-            for entry in singles:
-                result = read_vpd(settings, meshes, entry['path'], entry['name'], settings.pose_import_scale, humanoid_only=True)
-                reports.append(dict(entry, **result))
-            library = custom_presets(settings)
-            if self.assign_references:
-                for entry in reports:
-                    if entry['role']:
-                        title, slot, hands = REFERENCE_SLOTS[entry['role']]
-                        if slot.startswith(('portrait:', 'half_body:')):
-                            continue
-                        angle = (entry['head_yaw']+REFERENCE_CAMERA_OFFSETS[entry['role']]+180) % 360-180
-                        library['shot_overrides'][slot] = {'pose': entry['name'], 'title': title, 'include_hands': hands,
-                                                          'support': 'floor', 'azimuth': round(angle, 3)}
-                store_presets(settings, library)
-            report = {'imported': reports, 'skipped_paired': [e for e in entries if e['paired']], 'renders': 0}
-            settings.pose_folder_report = json.dumps(report, ensure_ascii=False)
-            text = bpy.data.texts.get('AniForge Local Pose Report') or bpy.data.texts.new('AniForge Local Pose Report')
-            text.clear(); text.write(json.dumps(report, ensure_ascii=False, indent=2))
-            self.report({'INFO'}, f'已导入 {len(singles)} 个单人姿势，跳过 {len(entries)-len(singles)} 个双人部分；总输出为 42 张。')
-            return {'FINISHED'}
-        except Exception as exc:
-            settings.presets_json = before_library
-            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
-        finally:
-            restore_seated(rig)
-            for bone, mode, matrix in pose:
-                bone.rotation_mode = mode; bone.matrix_basis = matrix
-            for constraint, mute in mutes:
-                constraint.mute = mute
-            if seated:
-                rig[SEATED_STATE] = seated
-            for key, value in shapes:
-                key.value = value
-            context.view_layer.update()
-
-
-class ML_OT_assign_shot(bpy.types.Operator):
-    bl_idname = 'ml.assign_shot_pose'; bl_label = '将当前姿势预设用于此镜头'; bl_options = {'REGISTER', 'UNDO'}
-    reset: BoolProperty(default=False)
-
-    def execute(self, context):
-        try:
-            settings = context.scene.ml_settings; library = custom_presets(settings)
-            slot = f'{settings.preview_group}:{settings.plan_index}'
-            if self.reset:
-                library['shot_overrides'].pop(slot, None)
-            else:
-                hands = [name for name, enabled in (('left_wrist', settings.slot_left_hand), ('right_wrist', settings.slot_right_hand)) if enabled]
-                library['shot_overrides'][slot] = {'pose': settings.pose, 'expression': settings.expression,
-                                                  'include_hands': hands, 'title': '自选·'+settings.pose[:76],
-                                                  'support': 'seat' if settings.slot_seat or settings.pose in SEATED_POSES else 'floor'}
-            store_presets(settings, library)
-            self.report({'INFO'}, '镜头预设已更新；总数保持 42 张。'); return {'FINISHED'}
-        except Exception as exc:
-            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
-
-
 def dataset_plan(settings):
-    if settings.dataset_variation == 'CURRENT':
-        return current_recipe(settings)
-    library = custom_presets(settings)
-    shots = apply_shot_overrides(recipe(), library)
-    if settings.hip_hand == 'RIGHT':
-        for shot in shots:
-            if shot['pose'] == 'hand_hip' and not shot.get('pose_overridden') and shot.get('pose_provider') != 'AnimCharTools':
-                shot['azimuth'] = -shot['azimuth']
-                angles = shot['performance']['head_angles']
-                shot['performance'] = dict(shot['performance'], head_angles=[angles[0], -angles[1], -angles[2]])
-    return resolve_shot_assets(shots, library, animchar.rig_key(settings.armature))
+    return recipe()
+
+
+def selected_shot(settings):
+    return next(s for s in recipe() if s['group'] == settings.preview_group and s['index'] == settings.plan_index)
 
 
 def update_preview_camera(context, settings, meshes, shot):
-    require_shot_asset(shot)
-    if animchar.busy() or animchar.editing():
-        raise ValueError('请先完成当前 AnimChar 任务。')
-    effective = ShotSettings(settings, shot)
-    pose_apply(effective, shot.get('pose', settings.pose))
-    expression_apply(effective, meshes, shot.get('expression', settings.expression))
+    if has_animation(settings.armature, meshes):
+        raise ValueError('请先在角色副本中解除动画，避免动画覆盖 T Pose。')
+    apply_tpose(settings)
+    neutralize_face(settings.armature, meshes)
     context.view_layer.update()
-    camera = next((obj for obj in context.scene.objects if obj.type == 'CAMERA' and obj.get('aniforge_preview_for') == settings.armature.name), None)
+    camera = next((o for o in context.scene.objects if o.type == 'CAMERA' and o.get('aniforge_preview_for') == settings.armature.name), None)
     if not camera:
         camera = bpy.data.objects.new('AniForge Preview Camera', bpy.data.cameras.new('AniForge Preview Camera'))
-        context.scene.collection.objects.link(camera); camera['aniforge_preview_for'] = settings.armature.name
+        context.scene.collection.objects.link(camera)
+        camera['aniforge_preview_for'] = settings.armature.name
     context.scene.render.pixel_aspect_x = context.scene.render.pixel_aspect_y = 1
     configure_camera(context, settings, meshes, camera, shot)
     context.scene.camera = camera
@@ -591,39 +340,98 @@ def update_preview_camera(context, settings, meshes, shot):
     return camera
 
 
+class ML_OT_tpose(bpy.types.Operator):
+    bl_idname = 'ml.tpose'; bl_label = '应用唯一 T Pose / 清除面部表情'; bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        try:
+            settings = context.scene.ml_settings
+            meshes = model_meshes(settings)
+            if has_animation(settings.armature, meshes):
+                raise ValueError('请先在角色副本中解除动画，避免动画覆盖 T Pose。')
+            apply_tpose(settings)
+            neutralize_face(settings.armature, meshes)
+            return {'FINISHED'}
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
+
+
+class ML_OT_camera_preset(bpy.types.Operator):
+    bl_idname = 'ml.camera_preset'; bl_label = '镜头预设'; bl_options = {'REGISTER', 'UNDO'}
+    save: BoolProperty(default=False)
+
+    def execute(self, context):
+        try:
+            settings = context.scene.ml_settings; library = camera_library(settings)
+            if self.save:
+                name = settings.camera_name.strip() or settings.camera_preset
+                if not name or name == 'AUTO':
+                    raise ValueError('请填写镜头预设名称。')
+                library['cameras'][name] = capture_camera(settings)
+                settings.camera_presets_json = json.dumps(validate_camera_library(library), ensure_ascii=False)
+                settings.camera_preset = name
+            elif settings.camera_preset != 'AUTO':
+                camera_apply(settings, library['cameras'][settings.camera_preset])
+            return {'FINISHED'}
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
+
+
+class ML_OT_export_cameras(bpy.types.Operator, ExportHelper):
+    bl_idname = 'ml.export_cameras'; bl_label = '导出镜头 JSON'
+    filename_ext = '.json'
+    filter_glob: StringProperty(default='*.json', options={'HIDDEN'})
+
+    def execute(self, context):
+        try:
+            write_json(self.filepath, camera_library(context.scene.ml_settings))
+            return {'FINISHED'}
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
+
+
+class ML_OT_import_cameras(bpy.types.Operator, ImportHelper):
+    bl_idname = 'ml.import_cameras'; bl_label = '导入镜头 JSON'; bl_options = {'REGISTER', 'UNDO'}
+    filename_ext = '.json'
+    filter_glob: StringProperty(default='*.json', options={'HIDDEN'})
+
+    def execute(self, context):
+        try:
+            path = Path(self.filepath)
+            if path.stat().st_size > 8*1024*1024:
+                raise ValueError('镜头文件不能超过 8 MiB。')
+            incoming = validate_camera_library(json.loads(path.read_text(encoding='utf-8-sig')))
+            settings = context.scene.ml_settings; library = camera_library(settings)
+            library['cameras'].update(incoming['cameras'])
+            settings.camera_presets_json = json.dumps(library, ensure_ascii=False)
+            return {'FINISHED'}
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
+
+
 class ML_OT_shot_plan(bpy.types.Operator):
-    bl_idname = 'ml.shot_plan'; bl_label = '预览编排镜头（不出图）'; bl_options = {'REGISTER', 'UNDO'}
+    bl_idname = 'ml.shot_plan'; bl_label = '预览选中视图（不出图）'; bl_options = {'REGISTER', 'UNDO'}
     report_only: BoolProperty(default=False)
 
     def execute(self, context):
         try:
             settings = context.scene.ml_settings
-            plan = dataset_plan(settings)
             if self.report_only:
-                text = bpy.data.texts.get('AniForge 42 Shot Plan') or bpy.data.texts.new('AniForge 42 Shot Plan')
-                text.clear(); text.write(json.dumps({'shots': plan, 'coverage': dataset_coverage(plan), 'total': len(plan)}, ensure_ascii=False, indent=2))
-                self.report({'INFO'}, '42 张拍摄清单已写入文本编辑器，没有渲染图片。')
+                text = bpy.data.texts.get('AniForge 16 View Plan') or bpy.data.texts.new('AniForge 16 View Plan')
+                text.clear(); text.write(json.dumps({'shots': recipe(), 'coverage': dataset_coverage(recipe())}, ensure_ascii=False, indent=2))
             else:
-                shot = next(s for s in plan if s['group'] == settings.preview_group and s['index'] == settings.plan_index)
-                update_preview_camera(context, settings, model_meshes(settings), shot)
-                self.report({'INFO'}, f'{shot["index"]}/{len([s for s in plan if s["group"] == shot["group"]])} {shot["title"]}：姿势、表情和镜头已联动，没有渲染图片。')
+                update_preview_camera(context, settings, model_meshes(settings), selected_shot(settings))
+            self.report({'INFO'}, '已更新，没有渲染图片。')
             return {'FINISHED'}
         except Exception as exc:
             self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
 
 
 class ML_OT_frame_camera(bpy.types.Operator):
-    bl_idname = 'ml.frame_camera'; bl_label = '应用姿势表情并生成预览相机'; bl_options = {'REGISTER', 'UNDO'}
+    bl_idname = 'ml.frame_camera'; bl_label = '更新选中视图相机（不出图）'; bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        try:
-            settings = context.scene.ml_settings
-            meshes = model_meshes(settings)
-            shot = dict(group=settings.preview_group, azimuth=0)
-            update_preview_camera(context, settings, meshes, shot)
-            self.report({'INFO'}, '预览相机已更新，没有渲染图片。'); return {'FINISHED'}
-        except Exception as exc:
-            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
+        return bpy.ops.ml.shot_plan()
 
 
 def bounds(meshes, depsgraph):
@@ -649,23 +457,17 @@ class RenderSession:
         self.settings = self.scene.ml_settings
         self.plan = list(shots) if shots is not None else []
         self.meshes = model_meshes(self.settings)
-        if animchar.has_action_channels(self.settings.armature):
-            raise ValueError('请先在副本中解除角色 Action；动画可能覆盖预设。')
+        if has_animation(self.settings.armature, self.meshes):
+            raise ValueError('请先在角色副本中解除动画，避免动画覆盖 T Pose。')
         self.created = []; self.manifest = None; self.folder = None
-        self.pose = [(b, b.rotation_mode, b.matrix_basis.copy()) for b in self.settings.armature.pose.bones]
-        self.constraint_mutes = [(c, c.mute) for b in self.settings.armature.pose.bones for c in b.constraints]
-        self.seated_state = self.settings.armature.get(SEATED_STATE)
-        self.shapes = [(key, key.value) for _, keys in shape_blocks(self.meshes) for key in keys]
+        self.closed = False
+        self.character_state = CharacterState(self.settings.armature, self.meshes)
         r = self.scene.render
         self.saved = (self.scene.camera, r.engine, r.filepath, r.resolution_x, r.resolution_y,
                       r.resolution_percentage, r.image_settings.file_format, r.image_settings.color_mode,
                       r.film_transparent, self.scene.world, self.scene.view_settings.view_transform,
                       r.use_file_extension, r.use_border, r.use_compositing, r.use_sequencer, r.pixel_aspect_x, r.pixel_aspect_y)
         self.visibility = [(o, o.hide_render) for o in self.scene.objects if o.type in {'MESH', 'LIGHT'} and o not in self.meshes]
-        self.supports = []
-        self.dynamics_constraints = [c for b in self.settings.armature.pose.bones for c in b.constraints
-                                     if c.name.startswith('mmd_tools_rigid_track') or
-                                     getattr(getattr(c, 'target', None), 'mmd_type', '') in {'RIGID_BODY', 'TRACK_TARGET'}]
         self.rigidbody_world = self.scene.rigidbody_world
         self.rigidbody_enabled = self.rigidbody_world.enabled if self.rigidbody_world else None
         self.simulation_modifiers = [(m, m.show_viewport, m.show_render) for obj in self.meshes for m in obj.modifiers
@@ -688,15 +490,14 @@ class RenderSession:
                          'shots': [], 'recipe': self.plan, 'planned_coverage': dataset_coverage(self.plan),
                          'deformation_mode': 'ARMATURE_STATIC',
                          'camera_settings': capture_camera(self.settings),
-                         'performance': {'pose_strength': self.settings.pose_strength, 'expression_strength': self.settings.expression_strength,
-                                         'hand_pose': self.settings.hand_pose, 'head_angles': list(self.settings.head_angles)}}
+                         'pose': 'tpose', 'expression': 'neutral'}
         self.flush()
         if self.rigidbody_world:
             self.rigidbody_world.enabled = False
-        for constraint in self.dynamics_constraints:
-            constraint.mute = True
         for modifier, _, _ in self.simulation_modifiers:
             modifier.show_viewport = modifier.show_render = False
+        apply_tpose(self.settings)
+        neutralize_face(self.settings.armature, self.meshes)
         for obj, _ in self.visibility:
             obj.hide_render = True
         self.camera = self.create_object('LoRA Camera', 'CAMERA'); self.camera.data.type = 'ORTHO'
@@ -723,85 +524,18 @@ class RenderSession:
         write_json(self.folder / 'manifest.json', self.manifest)
 
     def reset_character(self, static=True):
-        restore_seated(self.settings.armature)
-        for bone, mode, matrix in self.pose:
-            bone.rotation_mode = mode; bone.matrix_basis = matrix
-        for constraint, muted in self.constraint_mutes:
-            constraint.mute = muted
-        if static:
-            for constraint in self.dynamics_constraints:
-                constraint.mute = True
-        if self.seated_state:
-            self.settings.armature[SEATED_STATE] = self.seated_state
-        for key, value in self.shapes:
-            key.value = value
-
-    def support_box(self, context, name, center, dimensions, render=True):
-        data = bpy.data.meshes.new(name)
-        vertices = [(x*.5, y*.5, z*.5) for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)]
-        data.from_pydata(vertices, [], [(0, 4, 6, 2), (1, 3, 7, 5), (0, 1, 5, 4), (2, 6, 7, 3), (0, 2, 3, 1), (4, 5, 7, 6)])
-        obj = bpy.data.objects.new(name, data); self.scene.collection.objects.link(obj)
-        obj.location = center; obj.scale = dimensions; obj.hide_render = not render
-        self.supports.append((obj, data)); self.created.append((obj, data, 'MESH'))
-        if render:
-            if not hasattr(self, 'support_material'):
-                self.support_material = bpy.data.materials.new('AniForge Neutral Seat')
-                self.support_material.use_nodes = True
-                self.support_material.diffuse_color = (.12, .12, .12, 1)
-                if self.support_material.node_tree:
-                    for node in self.support_material.node_tree.nodes:
-                        if node.type == 'BSDF_PRINCIPLED':
-                            node.inputs['Base Color'].default_value = (.12, .12, .12, 1)
-                            node.inputs['Roughness'].default_value = .8
-            data.materials.append(self.support_material)
-        return obj
-
-    def prepare_supports(self, context, shot):
-        for obj, data in self.supports:
-            self.created.remove((obj, data, 'MESH'))
-            bpy.data.objects.remove(obj, do_unlink=True); bpy.data.meshes.remove(data)
-        self.supports.clear()
-        lo, hi = bounds(self.meshes, context.evaluated_depsgraph_get())
-        h = hi.z-lo.z
-        ankles = [b for key in ('left_ankle', 'right_ankle') if (b := find_bone(self.settings.armature, key, self.settings))]
-        ground = min((self.settings.armature.matrix_world @ b.tail).z for b in ankles) if ankles else lo.z
-        if shot.get('support') == 'seat' or shot['pose'] in {'sit_chair', 'sit_side'}:
-            hips = find_bone(self.settings.armature, 'lower_body', self.settings)
-            if not hips:
-                raise ValueError('坐姿需要下半身骨骼来定位坐凳。')
-            point = self.settings.armature.matrix_world @ hips.head
-            angle = math.radians(self.settings.front)
-            forward = Vector((math.sin(angle), -math.cos(angle), 0))
-            seat_top = point.z-h*.06; thickness = h*.035
-            center = point+forward*h*.025; center.z = seat_top-thickness*.5
-            seat = self.support_box(context, 'AniForge Seat', center, (h*.32, h*.26, thickness))
-            seat.rotation_euler.z = angle
-            # Four slim legs keep clothing/leg silhouettes visible.
-            side = Vector((math.cos(angle), math.sin(angle), 0))
-            leg_height = max(seat_top-thickness-ground, h*.02)
-            for x in (-1, 1):
-                for y in (-1, 1):
-                    p = center+side*h*.13*x+forward*h*.1*y; p.z = ground+leg_height*.5
-                    self.support_box(context, 'AniForge Seat Leg', p, (h*.025, h*.025, leg_height))
+        self.character_state.restore()
 
     def prepare_shot(self, context, shot):
-        require_shot_asset(shot)
-        self.reset_character()
-        effective = ShotSettings(self.settings, shot)
-        expression_keys = expression_apply(effective, self.meshes, shot['expression'])
-        pose_bones = pose_apply(effective, shot['pose'])
-        from .hand_pose import fit_report
-        self.hand_fit = fit_report(self.settings.armature) if shot['pose'] == 'hand_hip' and shot['pose'] not in custom_presets(self.settings)['poses'] else None
+        # Ignore any removed pose/expression fields supplied by old scripts.
+        apply_tpose(self.settings)
+        cleared = neutralize_face(self.settings.armature, self.meshes)
         context.view_layer.update()
-        self.prepare_supports(context, shot)
-        context.view_layer.update()
-        group = shot['group']
         self.camera_meta = configure_camera(context, self.settings, self.meshes, self.camera, shot)
-        folder = self.folder / group; folder.mkdir(exist_ok=True)
-        name = f'{safe_name(self.settings.trigger)}_{group}_{shot["index"]:02d}'
+        folder = self.folder / shot['group']; folder.mkdir(exist_ok=True)
+        name = f'{safe_name(self.settings.trigger)}_{shot["group"]}_{shot["index"]:02d}'
         image = folder / (name + '.png'); self.scene.render.filepath = str(image)
-        context.view_layer.update()
-        return image, expression_keys, pose_bones
+        return image, cleared, [b.name for b in self.settings.armature.pose.bones]
 
     def render(self, context, shot):
         image, expression_keys, pose_bones = self.prepare_shot(context, shot)
@@ -809,27 +543,16 @@ class RenderSession:
         bpy.ops.render.render(write_still=True)
         if not image.is_file():
             raise RuntimeError('渲染未生成目标 PNG。')
-        # Do not label missing or merely approximate bone presets as verified poses.
-        expression = shot['expression'] if expression_keys else 'neutral'
-        pose_label = shot['pose'] if shot['pose'] in custom_presets(self.settings)['poses'] else ''
-        if shot.get('pose_provider') == 'AnimCharTools':
-            pose_label = shot.get('semantic_pose', '') if shot.get('asset_status') == 'REVIEWED' else ''
-        posture = ''
-        if shot['pose'] in SEATED_POSES:
-            thighs = [find_bone(self.settings.armature, key, self.settings) for key in ('left_leg', 'right_leg')]
-            if all(b is not None and abs((b.tail-b.head).normalized().z) < .55 for b in thighs):
-                posture = 'sitting'
-        angle = abs((self.camera_meta['azimuth']+180) % 360-180)
-        view = 'from behind' if angle > 135 else 'side view' if angle >= 70 else ''
-        extra = ', '.join(value for value in (posture, view, self.settings.tags) if value)
-        tags = caption(self.settings.trigger, group, expression, pose_label, extra)
+        tags = caption(self.settings.trigger, group, shot.get('view', 'front'), self.settings.tags)
         image.with_suffix('.txt').write_text(tags + '\n', encoding='utf-8')
-        self.manifest['shots'].append(dict(shot, image=str(image.relative_to(self.folder)), caption=tags,
-                                           mapped_shape_keys=expression_keys, mapped_bones=pose_bones,
-                                           pose_requires_review=shot.get('asset_status') != 'REVIEWED', mapped_posture=posture, camera=self.camera_meta, hand_fit=self.hand_fit, deformation_mode='ARMATURE_STATIC'))
+        self.manifest['shots'].append(dict(shot, pose='tpose', expression='neutral', image=str(image.relative_to(self.folder)), caption=tags,
+                                           cleared_face_keys=expression_keys, camera=self.camera_meta, deformation_mode='ARMATURE_STATIC'))
         self.flush()
 
     def close(self, status, error=''):
+        if self.closed:
+            return
+        self.closed = True
         try:
             self.reset_character(static=False)
             if self.rigidbody_world:
@@ -848,8 +571,6 @@ class RenderSession:
                 {'CAMERA': bpy.data.cameras, 'LIGHT': bpy.data.lights, 'MESH': bpy.data.meshes}[kind].remove(data)
             if hasattr(self, 'world'):
                 bpy.data.worlds.remove(self.world)
-            if hasattr(self, 'support_material'):
-                bpy.data.materials.remove(self.support_material)
         finally:
             self.settings.running = False
             if self.manifest is not None:
@@ -857,9 +578,8 @@ class RenderSession:
 
 
 class ML_OT_render(bpy.types.Operator):
-    bl_idname = 'ml.render_dataset'; bl_label = '渲染三视图测试'
+    bl_idname = 'ml.render_dataset'; bl_label = '渲染 T Pose 视图'
     test_only: BoolProperty(name='仅三视图测试', default=True)
-    use_plan_shot: BoolProperty(name='测试当前编排镜头', default=False)
     _timer = None
     _session = None
 
@@ -877,18 +597,10 @@ class ML_OT_render(bpy.types.Operator):
 
     def execute(self, context):
         self.index = 0
+        self._session = None
         settings = context.scene.ml_settings
-        self.shots = three_view_recipe(settings.preview_group, settings.pose, settings.expression) if self.test_only else dataset_plan(settings)
-        if self.test_only and self.use_plan_shot:
-            base = next(s for s in dataset_plan(settings) if s['group'] == settings.preview_group and s['index'] == settings.plan_index)
-            self.shots = [dict(base, index=i+1, azimuth=angle, view=view) for i, (angle, view) in enumerate(((0, 'front'), (90, 'side'), (180, 'back')))]
+        self.shots = three_view_recipe(settings.preview_group) if self.test_only else dataset_plan(settings)
         try:
-            if animchar.busy() or animchar.editing():
-                raise ValueError('请先完成当前 AnimChar 任务。')
-            for shot in self.shots:
-                require_shot_asset(shot)
-                if not self.test_only and shot.get('asset_status') == 'NEEDS_FIX':
-                    raise ValueError(f'{shot["group"]} {shot["index"]:02} 已标记待修，请修正后再生成完整数据集。')
             self._session = RenderSession(context, self.shots); self._session.setup(context)
             context.scene.ml_settings.running = True
             context.window_manager.progress_begin(0, len(self.shots))
@@ -926,8 +638,7 @@ class ML_OT_render(bpy.types.Operator):
 
 
 class ML_OT_preview(bpy.types.Operator):
-    bl_idname = 'ml.preview'; bl_label = '渲染一张正面预览'
-    use_plan_shot: BoolProperty(default=False)
+    bl_idname = 'ml.preview'; bl_label = '渲染选中视图 1 张'
 
     @classmethod
     def poll(cls, context):
@@ -937,13 +648,8 @@ class ML_OT_preview(bpy.types.Operator):
         session = None
         try:
             settings = context.scene.ml_settings
-            shot = dict(group=settings.preview_group, index=1, azimuth=0, expression=settings.expression, pose=settings.pose)
-            if self.use_plan_shot:
-                shot = next(s for s in dataset_plan(settings) if s['group'] == settings.preview_group and s['index'] == settings.plan_index)
-            require_shot_asset(shot)
-            if animchar.busy() or animchar.editing():
-                raise ValueError('请先完成当前 AnimChar 任务。')
-            session = RenderSession(context); session.setup(context)
+            shot = selected_shot(settings)
+            session = RenderSession(context, [shot]); session.setup(context)
             session.render(context, shot)
             session.close('preview')
             self.report({'INFO'}, '预览已写入：' + str(session.folder))
@@ -955,56 +661,30 @@ class ML_OT_preview(bpy.types.Operator):
 
 
 class ML_PT_panel(bpy.types.Panel):
-    bl_label = 'AniForge · 姿势与渲染'; bl_idname = 'ML_PT_panel'
+    bl_label = 'AniForge · T Pose 四视图渲染'; bl_idname = 'ML_PT_panel'
     bl_space_type = 'VIEW_3D'; bl_region_type = 'UI'; bl_category = 'MMD LoRA'
 
     def draw(self, context):
         settings = context.scene.ml_settings
         layout = self.layout; col = layout.column(); col.enabled = not settings.running
-        col.prop(settings, 'armature')
-        col.prop(settings, 'ui_section', expand=True)
+        col.prop(settings, 'armature'); col.prop(settings, 'ui_section', expand=True)
         section = settings.ui_section
-        if section == 'SHOTS':
-            workflow.draw_shots(col, settings)
-        elif section == 'MATERIAL':
+        if section == 'MATERIAL':
             col.prop(settings, 'style')
             col.label(text='先用 MMD Tools 导入 PMX / PMD', icon='INFO')
             col.prop(settings, 'textures'); col.operator('ml.textures'); col.operator('ml.assign_textures')
             col.prop(settings, 'material_profiles')
             if settings.material_profiles:
-                col.prop(settings, 'hair_highlight_strength'); col.prop(settings, 'face_fill'); col.prop(settings, 'face_shadow_strength')
+                for name in ('hair_highlight_strength', 'face_fill', 'face_shadow_strength'):
+                    col.prop(settings, name)
             col.operator('ml.materials')
-        elif section == 'PERFORMANCE':
-            col.prop(settings, 'front'); col.operator('ml.mapping_report')
-            col.prop(settings, 'preset_name')
-            for prop, apply, save in [('expression', 'EXPRESSION', 'SAVE_EXPRESSION'), ('pose', 'POSE', 'SAVE_POSE')]:
-                box = col.box(); box.prop(settings, prop)
-                box.prop(settings, 'expression_strength' if prop == 'expression' else 'pose_strength')
-                if prop == 'expression':
-                    box.prop(settings, 'capture_all_keys')
-                else:
-                    box.prop(settings, 'head_angles'); box.prop(settings, 'hand_pose')
-                    if settings.pose == 'hand_hip':
-                        box.prop(settings, 'hip_hand'); box.prop(settings, 'hip_clearance')
-                        box.prop(settings, 'hip_offset'); box.prop(settings, 'free_hand_offset')
-                row = box.row(); row.operator('ml.preset', text='应用').action = apply
-                row.operator('ml.preset', text='保存当前').action = save
-                box.operator('ml.preset', text='清空表情' if prop == 'expression' else '恢复静置姿势').action = 'RESET_EXPRESSION' if prop == 'expression' else 'RESET_POSE'
-            col.operator('ml.import_vpd')
-            box = col.box(); box.prop(settings, 'pose_folder'); box.prop(settings, 'pose_import_scale')
-            box.operator('ml.import_pose_folder')
-            if settings.pose_folder_report:
-                report = json.loads(settings.pose_folder_report)
-                box.label(text=f'本地单人 {len(report["imported"])} · 双人部分 {len(report["skipped_paired"])}')
-            row = col.row(); row.operator('ml.import_presets', text='导入 JSON'); row.operator('ml.export_presets', text='导出 JSON')
-            col.operator('ml.frame_camera')
         elif section == 'CAMERA':
-            col.prop(settings, 'preview_group')
+            col.prop(settings, 'camera_name'); col.prop(settings, 'camera_preset')
+            row = col.row(); row.operator('ml.camera_preset', text='应用镜头'); row.operator('ml.camera_preset', text='保存镜头').save = True
+            row = col.row(); row.operator('ml.import_cameras'); row.operator('ml.export_cameras')
+            col.prop(settings, 'preview_group'); col.prop(settings, 'plan_index')
             if settings.preview_group == 'portrait':
                 col.prop(settings, 'portrait_focus')
-            col.prop(settings, 'preset_name'); col.prop(settings, 'camera_preset')
-            row = col.row(); row.operator('ml.preset', text='应用镜头预设').action = 'CAMERA'
-            row.operator('ml.preset', text='保存镜头预设').action = 'SAVE_CAMERA'
             col.prop(settings, 'camera_projection')
             if settings.camera_projection == 'PERSP':
                 col.prop(settings, 'camera_lens')
@@ -1012,46 +692,54 @@ class ML_PT_panel(bpy.types.Panel):
                 col.prop(settings, name)
             col.operator('ml.frame_camera')
         else:
-            col.prop(settings, 'trigger'); col.prop(settings, 'tags')
-            col.prop(settings, 'resolution'); col.prop(settings, 'output')
-            col.prop(settings, 'preview_group'); col.prop(settings, 'camera_aspect')
-            col.prop(settings, 'pose'); col.prop(settings, 'expression')
-            col.operator('ml.preview', text='手动预览（高级姿势参数）')
-            col.separator(); col.prop(settings, 'dataset_variation')
-            box = col.box(); box.label(text='肖像 12 · 半身 12 · 全身 9 · 服装 9')
-            box.prop(settings, 'plan_index')
-            shot = next(s for s in dataset_plan(settings) if s['group'] == settings.preview_group and s['index'] == settings.plan_index)
-            box.label(text=shot['title'])
-            box.label(text=f'{POSE_LABELS.get(shot["pose"], shot["pose"])} / {EXPRESSION_LABELS.get(shot["expression"], shot["expression"])}')
-            box.prop(settings, 'slot_left_hand'); box.prop(settings, 'slot_right_hand'); box.prop(settings, 'slot_seat')
-            box.operator('ml.assign_shot_pose')
-            box.operator('ml.assign_shot_pose', text='恢复此镜头默认姿势').reset = True
-            box.operator('ml.shot_plan')
-            box.operator('ml.preview', text='渲染此镜头 1 张').use_plan_shot = True
-            box.operator('ml.shot_plan', text='查看 42 张拍摄清单').report_only = True
-            col.operator('ml.render_dataset', text='生成角色数据集：共 42 张 + 标签', icon='RENDER_STILL').test_only = False
-            col.prop(settings, 'developer_tools')
-            if settings.developer_tools:
-                col.operator('ml.render_dataset', text='开发检查：正 / 侧 / 背').test_only = True
+            col.label(text='唯一 T Pose · 自然面部', icon='ARMATURE_DATA')
+            col.label(text='肖像 4 · 半身 4 · 全身 4 · 下半身 4')
+            col.label(text='每组：正面 / 左侧 / 右侧 / 背面')
+            col.operator('ml.tpose')
+            col.prop(settings, 'preview_group'); col.prop(settings, 'plan_index')
+            col.label(text=selected_shot(settings)['title'])
+            col.operator('ml.shot_plan')
+            col.operator('ml.preview', text='渲染选中视图 1 张')
+            if section == 'RENDER':
+                for name in ('trigger', 'tags', 'resolution', 'output'):
+                    col.prop(settings, name)
+                col.operator('ml.render_dataset', text='生成 16 张四视图 + 标签', icon='RENDER_STILL').test_only = False
+                col.operator('ml.render_dataset', text='开发测试：正 / 侧 / 背 3 张').test_only = True
+            else:
+                col.operator('ml.shot_plan', text='查看 16 张清单').report_only = True
         layout.label(text=settings.progress)
         if settings.running:
             layout.label(text='Esc 在单张渲染结束后停止')
 
 
-CLASSES = (MLSettings, ML_OT_materials, ML_OT_textures, ML_OT_assign_textures, ML_OT_preset,
-           ML_OT_export_presets, ML_OT_import_presets, ML_OT_vpd, ML_OT_mapping, ML_OT_frame_camera, ML_OT_shot_plan,
-           ML_OT_pose_folder, ML_OT_assign_shot, ML_OT_render, ML_OT_preview, *workflow.CLASSES, ML_PT_panel)
+CLASSES = (MLSettings, ML_OT_materials, ML_OT_textures, ML_OT_assign_textures,
+           ML_OT_camera_preset, ML_OT_import_cameras, ML_OT_export_cameras,
+           ML_OT_tpose, ML_OT_frame_camera, ML_OT_shot_plan, ML_OT_render, ML_OT_preview, ML_PT_panel)
+
+# Removed RNA/ID properties must not reactivate old workflows in saved projects.
+REMOVED_SETTINGS = ('presets_json', 'pose', 'expression', 'pose_strength', 'expression_strength', 'head_angles',
+                    'hand_pose', 'hip_hand', 'hip_clearance', 'hip_offset', 'free_hand_offset', 'preset_name',
+                    'capture_all_keys', 'dataset_variation', 'pose_folder', 'pose_import_scale',
+                    'pose_folder_report', 'slot_left_hand', 'slot_right_hand', 'slot_seat', 'developer_tools',
+                    'mapping_report', 'physics_mode', 'physics_frames', 'animchar_reference', 'animchar_prompt',
+                    'animchar_rebuild', 'animchar_review_note', 'animchar_status')
 
 
 @bpy.app.handlers.persistent
 def migrate_settings(_=None):
-    # Blender enables add-ons under _RestrictData at startup. Initialize the
-    # loaded scenes from load_post/the timer instead of failing registration.
     for scene in getattr(bpy.data, 'scenes', ()):
-        if scene.ml_settings.get('ui_section') == 4:
-            scene.ml_settings.ui_section = 'PERFORMANCE'
-        clamp_plan_index(scene.ml_settings)
-        animchar.restore_scene_results(scene.ml_settings)
+        settings = scene.ml_settings
+        if settings.get('presets_json') and not settings.camera_presets_json:
+            try:
+                settings.camera_presets_json = json.dumps(validate_camera_library(json.loads(settings['presets_json'])), ensure_ascii=False)
+            except (ValueError, TypeError):
+                pass
+        for name in REMOVED_SETTINGS:
+            if name in settings:
+                del settings[name]
+        if settings.get('ui_section') in {1, 4}:
+            settings.ui_section = 'SHOTS'
+        clamp_plan_index(settings)
 
 
 def register():
@@ -1061,20 +749,13 @@ def register():
     if migrate_settings not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(migrate_settings)
     migrate_settings()
-    if not bpy.app.timers.is_registered(animchar.restore_tick):
-        bpy.app.timers.register(animchar.restore_tick, first_interval=1.0, persistent=True)
 
 
 def unregister():
-    if animchar.busy() or animchar.editing():
-        raise RuntimeError('请先完成当前 AnimChar 任务再禁用插件。')
     if any(scene.ml_settings.running for scene in getattr(bpy.data, 'scenes', ())):
         raise RuntimeError('请先结束批量渲染再禁用插件。')
     if migrate_settings in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(migrate_settings)
-    if bpy.app.timers.is_registered(animchar.restore_tick):
-        bpy.app.timers.unregister(animchar.restore_tick)
     del bpy.types.Scene.ml_settings
-    workflow.clear_previews()
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

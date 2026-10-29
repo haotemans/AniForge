@@ -76,7 +76,7 @@ def run(args):
             session = addon.RenderSession(bpy.context)
             try:
                 session.setup(bpy.context)
-                shot = dict(group='portrait', index=5, azimuth=0, expression='neutral', pose='relaxed')
+                shot = recipe()[0]
                 session.render(bpy.context, shot)
                 report['original_render'] = str(session.folder)
             finally:
@@ -86,14 +86,8 @@ def run(args):
         try:
             session.setup(bpy.context)
             report['render_folder'] = str(session.folder)
-            shots = (recipe() if args.phase == 'full' else three_view_recipe(settings.preview_group)
-                     if args.phase == 'three_views' else [dict(s, expression='neutral', pose='relaxed') for s in recipe() if s['index'] == 5])
+            shots = recipe() if args.phase == 'full' else three_view_recipe(settings.preview_group) if args.phase == 'three_views' else [recipe()[0]]
             session.manifest['recipe'] = shots
-            if args.phase == 'preview':
-                shots += [dict(group='half_body', index=20+i, azimuth=0, expression='neutral', pose=pose)
-                          for i, pose in enumerate(('hand_hip', 'wave', 'open_arms'))]
-                shots += [dict(group='portrait', index=30+i, azimuth=0, expression=expression, pose='relaxed')
-                          for i, expression in enumerate(('smile', 'blink', 'surprised'))]
             for shot in shots:
                 session.render(bpy.context, shot)
         except Exception:

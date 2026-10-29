@@ -4,7 +4,7 @@ import math
 from mathutils import Vector, Quaternion
 from .material_profiles import material_role
 from .core import ShotSettings
-from .performance import find_bone, finger_bones, bone_side
+from .static_pose import find_bone
 
 CAMERA_FIELDS = ('camera_projection', 'camera_lens', 'camera_azimuth', 'camera_elevation', 'camera_roll',
                  'camera_zoom', 'camera_shift_x', 'camera_shift_y', 'camera_target_offset', 'camera_aspect',
@@ -83,12 +83,6 @@ def configure_camera(context, settings, meshes, camera, shot):
     hips = joint('lower_body')
     body_height = max((head.z-lo.z) + height*.07, height*.5) if head else height
     body_center = torso if torso is not None else center
-    # Approximate anatomical zones. These locate clothing on the wearer;
-    # no claim is made that a particular model actually wears a collar/skirt.
-    regions = {'COLLAR': (.82, .22, 0), 'CHEST': (.72, .30, 0),
-               'SLEEVE_LEFT': (.68, .42, .22), 'SLEEVE_RIGHT': (.68, .42, -.22),
-               'WAIST': (.54, .28, 0), 'HIPS': (.43, .34, 0), 'HEM': (.25, .47, 0),
-               'BACK_UPPER': (.73, .39, 0), 'BACK_WAIST': (.5, .34, 0), 'SHOES': (.08, .28, 0)}
     if group == 'full_body':
         points = box_points(lo, hi)
         target = center.copy()
@@ -108,63 +102,35 @@ def configure_camera(context, settings, meshes, camera, shot):
         size = max(top.z-bottom.z, body_height*.35)
         half = Vector((size*aspect*.5, body_height*.18, size*.5))
         points = box_points(target-half, target+half)
-    elif group == 'outfit_detail' and focus in regions:
-        vertical, fraction, lateral = regions[focus]
-        target = Vector((body_center.x, body_center.y, lo.z + body_height*vertical)) + side * body_height*lateral
-        size = body_height*fraction
-        if hips is not None and head is not None:
-            chest = joint('upper_body2')
-            chest = chest if chest is not None else head.lerp(hips, .4)
-            anchors = {'COLLAR': head.lerp(chest, .2), 'CHEST': chest.lerp(hips, .25),
-                       'WAIST': hips.lerp(chest, .3), 'HIPS': hips-Vector((0, 0, body_height*.06)),
-                       'BACK_UPPER': chest.lerp(hips, .2), 'BACK_WAIST': hips.lerp(chest, .25)}
-            if focus in anchors:
-                target = anchors[focus].copy()
-            if focus.startswith('SLEEVE_'):
-                arm = joint('left_arm' if focus == 'SLEEVE_LEFT' else 'right_arm')
-                wrist = joint('left_wrist' if focus == 'SLEEVE_LEFT' else 'right_wrist')
-                if arm is not None and wrist is not None:
-                    target = arm.lerp(wrist, .5)
-                    size = max(size, (wrist-arm).length*1.25)
-            if focus == 'HEM':
-                knees = [p for key in ('left_knee', 'right_knee') if (p := joint(key)) is not None]
-                if knees:
-                    target = hips.lerp(sum(knees, Vector())/len(knees), .8)
-            if focus == 'SHOES':
-                ankles = [p for key in ('left_ankle', 'right_ankle') if (p := joint(key)) is not None]
-                if ankles:
-                    target = sum(ankles, Vector())/len(ankles)
-        half = Vector((size*aspect*.5, body_height*.16, size*.5))
-        points = box_points(target-half, target+half)
+    elif group == 'lower_body':
+        # Fit actual evaluated clothing/leg geometry from waist/hips to the sole.
+        # Full-mesh bounds would include the T-pose arms and defeat this crop.
+        waist_z = (hips.z + body_height*.09) if hips is not None else lo.z+height*.58
+        waist_z = min(hi.z, max(lo.z+height*.3, waist_z))
+        crop = []
+        dg = context.evaluated_depsgraph_get()
+        for obj in meshes:
+            if obj.hide_render:
+                continue
+            evaluated = obj.evaluated_get(dg)
+            crop.extend(p for v in evaluated.data.vertices if (p := evaluated.matrix_world @ v.co).z <= waist_z)
+        if crop:
+            crop_lo = Vector(tuple(min(p[i] for p in crop) for i in range(3)))
+            crop_hi = Vector((max(p.x for p in crop), max(p.y for p in crop), waist_z))
+        else:
+            crop_lo = lo.copy(); crop_hi = Vector((hi.x, hi.y, waist_z))
+        points = box_points(crop_lo, crop_hi)
+        target = (crop_lo+crop_hi)*.5
     else:
-        fraction, vertical = {'portrait': (.29, .86), 'half_body': (.46, .78), 'outfit_detail': (.48, .49)}[group]
+        fraction, vertical = {'portrait': (.29, .86), 'half_body': (.46, .78)}[group]
         target = Vector((center.x, center.y, lo.z + height * vertical))
         size = height * fraction
         width = min(hi.x-lo.x, size * aspect)
         points = box_points(target-Vector((width*.5, (hi.y-lo.y)*.5, size*.5)), target+Vector((width*.5, (hi.y-lo.y)*.5, size*.5)))
-    included = []
-    for key in shot.get('include_hands', []):
-        point = joint(key)
-        if point is not None:
-            radius = body_height*.065
-            points += box_points(point-Vector((radius, radius, radius)), point+Vector((radius, radius, radius)))
-            # A raised/extended finger can lie outside a wrist-sized box.
-            # Follow the actual evaluated fingers of the requested hand.
-            side_name = key.split('_', 1)[0]
-            padding = Vector((body_height*.01,)*3)
-            for bone, _, _ in finger_bones(rig):
-                if bone_side(bone) == side_name:
-                    evaluated = evaluated_rig.pose.bones[bone.name]
-                    for local in (evaluated.head, evaluated.tail):
-                        tip = evaluated_rig.matrix_world @ local
-                        points += box_points(tip-padding, tip+padding)
-            included.append(key)
-    if included:
-        target = Vector(tuple((min(p[i] for p in points)+max(p[i] for p in points))*.5 for i in range(3)))
     x, y, z = settings.camera_target_offset
     target += height * (side*x + forward*y + Vector((0, 0, z)))
     azimuth = math.radians(settings.front + settings.camera_azimuth + shot.get('azimuth', 0))
-    elevation = math.radians(shot.get('elevation', settings.camera_elevation))
+    elevation = math.radians(settings.camera_elevation+shot.get('elevation', 0))
     direction = Vector((math.sin(azimuth)*math.cos(elevation), -math.cos(azimuth)*math.cos(elevation), math.sin(elevation)))
     rotation = (-direction).to_track_quat('-Z', 'Y') @ Quaternion(Vector((0, 0, 1)), math.radians(settings.camera_roll))
     camera.rotation_mode = 'QUATERNION'
@@ -202,5 +168,5 @@ def configure_camera(context, settings, meshes, camera, shot):
     return {'projection': data.type, 'lens': data.lens, 'target': list(target), 'location': list(camera.location),
             'ortho_scale': data.ortho_scale, 'resolution': list(resolution(settings)),
             'roi': [list(point) for point in points], 'azimuth': settings.camera_azimuth+shot.get('azimuth', 0),
-            'elevation': shot.get('elevation', settings.camera_elevation), 'focus': focus,
-            'included_hands': included}
+            'elevation': settings.camera_elevation+shot.get('elevation', 0), 'focus': focus,
+            'framing': group}

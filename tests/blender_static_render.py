@@ -46,13 +46,12 @@ frame = scene.frame_current; object_count = len(bpy.data.objects)
 # Raw values left in an older .blend must never reactivate removed features.
 settings['physics_mode'] = 1; settings['physics_frames'] = 240
 settings['ui_section'] = 4; addon.migrate_settings()
-assert settings.ui_section == 'PERFORMANCE'
 assert not hasattr(settings, 'physics_mode')
 assert 'PHYSICS' not in settings.bl_rna.properties['ui_section'].enum_items.keys()
 
 with tempfile.TemporaryDirectory() as folder:
     settings.output = folder
-    fixture_plan = [dict(s, pose_provider='TEST_FIXTURE') for s in addon.recipe()]
+    fixture_plan = addon.recipe()
     with patch('subprocess.run', side_effect=AssertionError('Physics subprocess started')), \
          patch('subprocess.Popen', side_effect=AssertionError('Physics worker started')):
         session = addon.RenderSession(bpy.context, fixture_plan); session.setup(bpy.context)
@@ -82,5 +81,5 @@ with tempfile.TemporaryDirectory() as folder:
     for manifest in Path(folder).rglob('manifest.json'):
         assert 'physics_settings' not in json.loads(manifest.read_text())
 assert scene.frame_current == frame
-print('STATIC_RENDER_OK: 42 shots, legacy settings ignored, no workers/images, dynamics restored after success/error')
+print('STATIC_RENDER_OK: 16 shots, legacy settings ignored, no workers/images, dynamics restored after success/error')
 addon.unregister()

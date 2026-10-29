@@ -127,98 +127,10 @@ for style in addon.STYLES:
     assert bpy.ops.ml.materials() == {'FINISHED'}
     assert body.active_material.name.endswith(style)
     assert any(n.type == 'BSDF_TRANSPARENT' for n in body.active_material.node_tree.nodes)
-addon.pose_apply(settings, 'hand_hip')
-addon.pose_apply(settings, 'relaxed')
-assert (rig.pose.bones['左ひじ'].matrix.to_quaternion() @ Vector((0, 1, 0))).z < -.9
-addon.expression_apply(settings, addon.model_meshes(settings), 'blink')
-assert blink.value == 1
-assert abs(structural.value - .3) < .0001
-settings.expression = 'smile'
-blink.value = .6
-assert bpy.ops.ml.preset(action='SAVE_EXPRESSION') == {'FINISHED'}
-blink.value = 0
-addon.expression_apply(settings, addon.model_meshes(settings), 'smile')
-assert abs(blink.value - .6) < .0001
-settings.presets_json = ''
-blink.value = 0
-addon.expression_apply(settings, addon.model_meshes(settings), 'neutral')
-assert blink.value == 0
-assert abs(structural.value - .3) < .0001
 
-# Ordinary regression checks do not render. The full suite is explicit opt-in.
-if '--full-render' not in sys.argv:
-    import tempfile
-    from unittest.mock import patch
-    dispatched = []
-    original_output = settings.output
-    objects_before = len(bpy.data.objects)
-    with tempfile.TemporaryDirectory() as temporary_output:
-        settings.output = temporary_output
-        with patch.object(addon.RenderSession, 'render', lambda self, context, shot: dispatched.append(shot.copy())):
-            assert bpy.ops.ml.render_dataset() == {'FINISHED'}
-        assert [shot['azimuth'] for shot in dispatched] == [0, 90, 180]
-        assert len(bpy.data.objects) == objects_before
-        assert not settings.running
-    settings.output = original_output
-    addon.unregister()
-    print('MMD_LORA_MATERIALS_OK (no images rendered)')
-    sys.exit(0)
-
-# Preserve a non-default user state and ensure the entire batch restores it.
-rig.pose.bones['左腕'].rotation_mode = 'XYZ'
-rig.pose.bones['左腕'].rotation_euler.x = .15
-old_matrix = rig.pose.bones['左腕'].matrix_basis.copy()
-scene.render.resolution_x = 720
-scene.render.use_border = True
-scene.render.use_compositing = True
-initial_camera = scene.camera
-initial_world = scene.world
-count = len(bpy.data.objects)
-# The explicit full material smoke option uses manual settings, independently
-# of account-backed AnimChar captures. Normal smoke runs produce no images.
-settings.dataset_variation = 'CURRENT'
-assert bpy.ops.ml.render_dataset(test_only=False) == {'FINISHED'}
-assert len(bpy.data.objects) == count
 assert len(bpy.data.meshes) == mesh_count
-assert scene.camera == initial_camera and scene.world == initial_world
-assert scene.render.resolution_x == 720 and scene.render.use_border and scene.render.use_compositing
-assert all(abs(rig.pose.bones['左腕'].matrix_basis[i][j] - old_matrix[i][j]) < .00001
-           for i in range(4) for j in range(4))
-assert abs(structural.value - .3) < .0001
-folder = sorted((ROOT / 'test_output').glob('smoke_character_*'))[-1]
-manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
-assert manifest['status'] == 'complete' and len(manifest['shots']) == 42
-assert len(list(folder.rglob('*.png'))) == 42
-assert len(list(folder.rglob('*.txt'))) == 42
-assert not settings.running
-
-# Exercise an interrupted session and a setup failure as well as successful completion.
-session = addon.RenderSession(bpy.context)
-session.setup(bpy.context)
-session.close('cancelled')
-assert len(bpy.data.objects) == count and scene.world == initial_world
-# Fail during setup after visibility was changed, then verify restoration.
-session = addon.RenderSession(bpy.context)
-def fail_camera(*args):
-    raise RuntimeError('Injected camera creation failure')
-session.create_object = fail_camera
-try:
-    session.setup(bpy.context)
-    raise AssertionError('Expected camera failure')
-except RuntimeError as exc:
-    assert 'Injected' in str(exc)
-finally:
-    session.close('failed', 'Injected test failure')
-assert len(bpy.data.objects) == count and scene.world == initial_world
-settings.preview_group = 'outfit_detail'
-assert bpy.ops.ml.preview() == {'FINISHED'}
-assert len(bpy.data.objects) == count and scene.world == initial_world
-settings.output = ''
-try:
-    bpy.ops.ml.render_dataset()
-    raise AssertionError('Expected invalid output to be rejected')
-except RuntimeError as exc:
-    assert '输出目录不能为空' in str(exc)
-assert len(bpy.data.objects) == count and not settings.running
+addon.apply_tpose(settings)
+addon.neutralize_face(rig, addon.model_meshes(settings))
+assert blink.value == 0 and abs(structural.value-.3) < .0001
 addon.unregister()
-print('MMD_LORA_SMOKE_OK', folder)
+print('MMD_LORA_MATERIALS_OK: six styles, texture repair, private alpha copies; no images rendered')

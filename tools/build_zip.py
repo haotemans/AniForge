@@ -15,6 +15,6 @@ with ZipFile(output, 'w', ZIP_DEFLATED) as archive:
         archive.write(file, file.relative_to(root))
     archive.write(root / 'README.md', 'mmd_lora_studio/README.md')
     for file in sorted((root / 'docs').rglob('*')):
-        if file.is_file() and file.suffix.lower() in {'.md', '.jpg', '.jpeg', '.png', '.webp'}:
+        if file.is_file() and file.suffix.lower() in {'.md'}:
             archive.write(file, 'mmd_lora_studio/' + file.relative_to(root).as_posix())
 print(output)

@@ -1,4 +1,4 @@
-"""Local mock vision API, in-memory 1024 cards, 8+8 batches and TXT; no renders."""
+"""Local mock API, proportional memory thumbnails, 8+8 batches and TXT; no renders."""
 import base64
 import hashlib
 import json
@@ -27,7 +27,7 @@ assert 'api_key' not in settings.bl_rna.properties
 requests = []; invalid = [False]
 
 
-def check_png(data):
+def check_png(data, expected=(64, 32)):
     assert data[:8] == b'\x89PNG\r\n\x1a\n'
     position = 8; compressed = b''
     while position < len(data):
@@ -35,15 +35,17 @@ def check_png(data):
         kind = data[position+4:position+8]
         value = data[position+8:position+8+size]
         if kind == b'IHDR':
-            assert struct.unpack('>IIBBBBB', value) == (1024, 1024, 8, 2, 0, 0, 0)
+            width, height, depth, color, compression, filtering, interlace = struct.unpack('>IIBBBBB', value)
+            assert (width, height) == expected
+            assert (depth, color, compression, filtering, interlace) == (8, 2, 0, 0, 0)
         if kind == b'IDAT': compressed += value
         position += size+12
-    rows = np.frombuffer(zlib.decompress(compressed), dtype=np.uint8).reshape(1024, 3073)
+    rows = np.frombuffer(zlib.decompress(compressed), dtype=np.uint8).reshape(height, width*3+1)
     assert np.all(rows[:, 0] == 0)
-    rgb = rows[:, 1:].reshape(1024, 1024, 3)
-    assert np.all(rgb[0, 0] == 255)  # White aspect-preserving padding.
-    assert tuple(rgb[300, 100]) == (255, 0, 0), rgb[300, 100]
-    assert tuple(rgb[700, 100]) == (0, 0, 255), rgb[700, 100]
+    rgb = rows[:, 1:].reshape(height, width, 3)
+    # Content must reach the edges, with no new white borders or upside-down image.
+    assert tuple(rgb[0, 0]) == (255, 0, 0), rgb[0, 0]
+    assert tuple(rgb[-1, 0]) == (0, 0, 255), rgb[-1, 0]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -97,6 +99,18 @@ try:
         image.filepath_raw = str(source); image.file_format = 'PNG'; image.save()
         bpy.data.images.remove(image)
         image_count = len(bpy.data.images)
+        for width, height, expected in ((2048, 1024, (1024, 512)), (1024, 2048, (512, 1024)), (512, 512, (512, 512))):
+            path = root/f'ratio_{width}_{height}.png'
+            sample = bpy.data.images.new('Ratio fixture', width=width, height=height, alpha=True)
+            pixels = np.zeros((height, width, 4), dtype=np.float32); pixels[:, :, 3] = 1
+            pixels[:height//2, :, 2] = 1; pixels[height//2:, :, 0] = 1
+            sample.pixels.foreach_set(pixels.ravel())
+            sample.filepath_raw = str(path); sample.file_format = 'PNG'; sample.save()
+            bpy.data.images.remove(sample)
+            original_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            check_png(captioning.thumbnail_png(path), expected)
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == original_hash
+        assert len(bpy.data.images) == image_count
         dataset = root/'dataset'; fixture(dataset, source, 16)
         hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in dataset.glob('*.png')}
         job = captioning.start(bpy.context, dataset, config=config, blocking=True)
@@ -151,4 +165,4 @@ finally:
     captioning.shutdown(); addon.unregister()
     server.shutdown(); server.server_close(); thread.join()
 
-print('CAPTIONING_OK: 1024 memory PNGs, 8+8 JSON, reverse ID mapping, 1 image/1 TXT, cached local prefixes, retry/async/cancel; zero renders')
+print('CAPTIONING_OK: proportional memory PNGs <=1024, no padding/upscale, 8+8 JSON, 1 image/1 TXT, cache/retry/async/cancel; zero renders')

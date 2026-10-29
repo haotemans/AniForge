@@ -41,7 +41,7 @@ def preflight(context):
 
 
 def thumbnail_png(path):
-    """Fit into a 1024-square white card and encode PNG entirely in memory."""
+    """Downscale proportionally to at most 1024 on the long edge; no padding."""
     image = bpy.data.images.load(str(path), check_existing=False)
     try:
         image.colorspace_settings.name = 'Non-Color'
@@ -49,22 +49,21 @@ def thumbnail_png(path):
         width, height = image.size
         if width <= 0 or height <= 0:
             raise CaptionError('图片无法读取。')
-        scale = min(IMAGE_SIZE/width, IMAGE_SIZE/height)
+        scale = min(1.0, IMAGE_SIZE/width, IMAGE_SIZE/height)
         width, height = max(1, round(width*scale)), max(1, round(height*scale))
-        image.scale(width, height)
+        if tuple(image.size) != (width, height):
+            image.scale(width, height)
         data = np.empty(width*height*4, dtype=np.float32)
         image.pixels.foreach_get(data)
         rgba = data.reshape(height, width, 4)
         alpha = np.clip(rgba[:, :, 3:4], 0, 1)
         rgb = np.clip(rgba[:, :, :3], 0, 1)*alpha+(1-alpha)
-        card = np.full((IMAGE_SIZE, IMAGE_SIZE, 3), 255, dtype=np.uint8)
-        x, y = (IMAGE_SIZE-width)//2, (IMAGE_SIZE-height)//2
-        card[y:y+height, x:x+width] = np.rint(rgb*255).astype(np.uint8)
+        pixels = np.rint(rgb*255).astype(np.uint8)
         def chunk(kind, payload):
             return struct.pack('>I', len(payload))+kind+payload+struct.pack('>I', zlib.crc32(kind+payload)&0xffffffff)
         # Blender buffers start at the bottom; PNG scanlines start at the top.
-        rows = b''.join(b'\0'+row.tobytes() for row in card[::-1])
-        header = struct.pack('>IIBBBBB', IMAGE_SIZE, IMAGE_SIZE, 8, 2, 0, 0, 0)
+        rows = b''.join(b'\0'+row.tobytes() for row in pixels[::-1])
+        header = struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)
         return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR', header)+chunk(b'IDAT', zlib.compress(rows, 6))+chunk(b'IEND', b'')
     finally:
         bpy.data.images.remove(image)
@@ -166,7 +165,8 @@ class CaptionJob:
                 if shot['caption_status'] == 'API_COMPLETE':
                     shot.pop('caption_error', None)
         manifest['captioning'] = {'completed': self.done, 'failed': self.failed, 'total': self.total,
-                                 'batch_size': BATCH_SIZE, 'api_image_size': [IMAGE_SIZE, IMAGE_SIZE],
+                                 'batch_size': BATCH_SIZE, 'api_image_max_edge': IMAGE_SIZE,
+                                 'api_image_resize': 'proportional_no_padding_no_upscale',
                                  'errors': self.errors}
         manifest['dataset_status'] = ('READY' if self.done == self.total else
                                       'CAPTION_STOPPED' if self.stop_after_batch else
@@ -300,7 +300,7 @@ def draw_config(layout, context):
     for prop in ('base_url', 'vision_model', 'api_key', 'caption_language', 'api_timeout'):
         layout.prop(prefs, prop)
     layout.label(text='兼容 Chat Completions 多图接口')
-    layout.label(text='每批 8 张 · 内存缩放 1024×1024')
+    layout.label(text='每批 8 张 · 等比缩小 · 长边 ≤1024')
     layout.operator('ml.save_caption_api', text='保存 API 设置', icon='FILE_TICK')
 
 

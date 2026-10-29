@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 11, 2),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 11, 3),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 T-pose views',
     'category': 'Render',
@@ -116,21 +116,23 @@ def toon_material(source, style, settings=None):
     multiply.location = (30, 100); multiply.inputs[0].default_value = 1
     multiply.inputs[1].default_value = tuple(source.diffuse_color) if source else (0.8, 0.8, 0.8, 1)
     tree.links.new(ramp.outputs[0], multiply.inputs[2])
-    soft_hair = style == 'NEVERNESS' and role == 'HAIR'
-    soft_skin = style == 'NEVERNESS' and role == 'SKIN'
+    soft_hair = style in {'NEVERNESS', 'ZZZ'} and role == 'HAIR'
+    soft_skin = style in {'NEVERNESS', 'ZZZ'} and role == 'SKIN'
     if role == 'FACE' or soft_hair or soft_skin:
-        # Mingyin's bright hair/neck expose the generic binary light threshold
-        # as broad disconnected brown bands. Keep the painted albedo and use
-        # smooth normal lighting consistently with the already softened face.
+        # Bright hair and skin expose the generic binary threshold as broad
+        # grey bands, especially on Feioni's back. Bounded normal lighting
+        # retains the painted strands and stays readable under viewport HDRIs
+        # and rear-view renders without baking changes into the source image.
         tree.links.new(face_light(tree, settings, minimum=.82 if soft_hair else None,
                                   role='Hair' if soft_hair else 'Skin' if soft_skin else 'Face'), multiply.inputs[2])
         mat['mmd_lora_soft_light'] = True
         tree.nodes.remove(rgb)
         tree.nodes.remove(diffuse)
         tree.nodes.remove(ramp)
-    elif role in {'EYE', 'DECAL'}:
+    elif role in {'EYE', 'DECAL'} or (style == 'ZZZ' and role == 'HAIR_HIGHLIGHT'):
         # Shader to RGB evaluates transparent layers against the probe in
-        # EEVEE's dithered path. Thin iris/decal layers must use direct color.
+        # EEVEE's dithered path. Thin iris/decal layers and ZZZ's coincident
+        # painted hair highlights must use direct color over the filled base.
         tree.links.remove(multiply.inputs[2].links[0])
         multiply.inputs[2].default_value = (1, 1, 1, 1)
         tree.nodes.remove(rgb)
@@ -161,7 +163,8 @@ def toon_material(source, style, settings=None):
     if hasattr(mat, 'surface_render_method'):
         # Locking every game's eye shells to BLENDED can reorder the iris and
         # sclera (notably ZZZ). The sampled WW eye stack needs this path.
-        mat.surface_render_method = 'BLENDED' if role == 'EYE' and style == 'WUWA' else 'DITHERED'
+        blended = (role == 'EYE' and style == 'WUWA') or (role == 'HAIR_HIGHLIGHT' and style == 'ZZZ')
+        mat.surface_render_method = 'BLENDED' if blended else 'DITHERED'
     return mat
 
 

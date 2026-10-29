@@ -125,6 +125,50 @@ assert mingyin_hair['mmd_lora_soft_light']
 assert not any(n.type == 'SHADERTORGB' for n in mingyin_hair.node_tree.nodes)
 other_hair = addon.toon_material(regression, 'WUWA', settings)
 assert any(n.type == 'SHADERTORGB' for n in other_hair.node_tree.nodes)
+# Feioni's back hair must retain strand colors with no studio/cast light.
+# Exercise both hair slots, repeated-name imports, and an explicit role override.
+from mathutils import Vector
+for name in ('前发', '后发', '后发.001', 'Custom hair'):
+    regression.name = name
+    if name == 'Custom hair':
+        regression['mmd_lora_role'] = 'HAIR'
+    zzz_hair = addon.toon_material(regression, 'ZZZ', settings)
+    assert zzz_hair['mmd_lora_role'] == 'HAIR'
+    assert zzz_hair['mmd_lora_soft_light']
+    assert not any(n.type == 'SHADERTORGB' for n in zzz_hair.node_tree.nodes)
+    fill = next(n for n in zzz_hair.node_tree.nodes if n.type == 'VALTORGB')
+    assert fill.color_ramp.interpolation == 'EASE'
+    low, high = fill.color_ramp.elements
+    assert .80 <= min(low.color[:3]) <= .83
+    assert tuple(high.color) == (1, 1, 1, 1)
+    direction = next(n for n in zzz_hair.node_tree.nodes if n.type == 'VECT_MATH')
+    for normal in ((0, -1, 0), (1, 0, 0), (0, 1, 0)):
+        light = fill.color_ramp.evaluate(Vector(normal).dot(direction.inputs[1].default_value))
+        assert min(light[:3]) >= .80
+    texture = next(n for n in zzz_hair.node_tree.nodes if n.type == 'TEX_IMAGE')
+    assert texture.image == source_image
+    assert shader.inputs['Alpha'].default_value == 1
+    if 'mmd_lora_role' in regression:
+        del regression['mmd_lora_role']
+regression.name = '肌'
+zzz_skin = addon.toon_material(regression, 'ZZZ', settings)
+assert zzz_skin['mmd_lora_soft_light']
+assert not any(n.type == 'SHADERTORGB' for n in zzz_skin.node_tree.nodes)
+regression.name = 'Coat'
+zzz_coat = addon.toon_material(regression, 'ZZZ', settings)
+assert any(n.type == 'SHADERTORGB' for n in zzz_coat.node_tree.nodes)
+fill = next(n for n in zzz_coat.node_tree.nodes if n.type == 'VALTORGB')
+assert fill.color_ramp.interpolation == 'CONSTANT'
+assert min(fill.color_ramp.elements[0].color[:3]) > .63
+regression.name = '后发+'
+zzz_highlight = addon.toon_material(regression, 'ZZZ', settings)
+assert zzz_highlight['mmd_lora_role'] == 'HAIR_HIGHLIGHT'
+assert zzz_highlight.surface_render_method == 'BLENDED'
+assert not any(n.type == 'SHADERTORGB' for n in zzz_highlight.node_tree.nodes)
+alpha = next(n for n in zzz_highlight.node_tree.nodes if n.type == 'MATH')
+assert alpha.operation == 'MULTIPLY'
+assert abs(alpha.inputs[1].default_value - settings.hair_highlight_strength) < .0001
+assert alpha.inputs[0].links[0].from_socket.name == 'Alpha'
 regression.name = '眉睫'
 assert material_role(regression) == 'EYE'
 mingyin_lashes = addon.toon_material(regression, 'NEVERNESS', settings)

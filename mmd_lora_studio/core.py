@@ -7,7 +7,8 @@ from pathlib import Path
 
 STYLES = {
     'HSR': ('崩坏：星穹铁道', 0.48, 0.62),
-    'ZZZ': ('绝区零', 0.55, 0.48),
+    # Preserve cel boundaries on clothing without crushing its rear details.
+    'ZZZ': ('绝区零', 0.55, 0.68),
     'GENSHIN': ('原神', 0.42, 0.68),
     'WUWA': ('鸣潮', 0.46, 0.72),
     'ENDFIELD': ('明日方舟：终末地', 0.50, 0.75),

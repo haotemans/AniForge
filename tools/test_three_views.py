@@ -22,6 +22,8 @@ args = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
 addon.register()
 settings = bpy.context.scene.ml_settings
 settings.armature = next(obj for obj in bpy.context.scene.objects if obj.type == 'ARMATURE')
+settings.style = args.game
+settings.api_caption = False
 settings.resolution = args.resolution
 settings.output = str(Path(args.output) / args.game)
 settings.preview_group = args.group

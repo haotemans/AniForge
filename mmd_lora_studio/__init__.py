@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 10, 2),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 10, 3),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 T-pose views',
     'category': 'Render',
@@ -185,6 +185,11 @@ def schedule_preview(settings, _context=None):
         bpy.app.timers.register(refresh_previews, first_interval=.15)
 
 
+def resolution_changed(settings, context):
+    settings['resolution_default_4k'] = True
+    schedule_preview(settings, context)
+
+
 def refresh_previews():
     for key, scene in list(_PENDING_PREVIEWS.items()):
         try:
@@ -211,7 +216,7 @@ class MLSettings(bpy.types.PropertyGroup):
     textures: StringProperty(name='贴图目录', subtype='DIR_PATH')
     trigger: StringProperty(name='角色触发词', default='my_character')
     tags: StringProperty(name='附加标签', default='anime style, simple background')
-    resolution: IntProperty(name='分辨率', default=1024, min=256, max=4096, update=schedule_preview)
+    resolution: IntProperty(name='分辨率', default=4096, min=256, max=4096, update=resolution_changed)
     preview_group: EnumProperty(name='取景范围', items=[(v, label, '') for v, label in GROUP_LABELS.items()], update=schedule_preview)
     plan_index: IntProperty(name='视角', default=1, min=1, max=4, update=schedule_preview)
     preview_view: EnumProperty(name='观察方向', items=[('FRONT', '正面', '0°', 1), ('LEFT', '左侧', '90°', 2),
@@ -760,6 +765,9 @@ def migrate_settings(_=None):
     _PENDING_PREVIEWS.clear()
     for scene in getattr(bpy.data, 'scenes', ()):
         settings = scene.ml_settings
+        if not settings.get('resolution_default_4k'):
+            settings['resolution_default_4k'] = True
+            settings.resolution = 4096
         if settings.get('presets_json') and not settings.camera_presets_json:
             try:
                 settings.camera_presets_json = json.dumps(validate_camera_library(json.loads(settings['presets_json'])), ensure_ascii=False)

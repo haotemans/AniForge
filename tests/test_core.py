@@ -43,6 +43,14 @@ class RecipeTests(unittest.TestCase):
     def test_coverage(self):
         self.assertEqual(core.dataset_coverage(core.recipe())['per_group'], dict.fromkeys(core.GROUPS, 4))
 
+    def test_crop_padding_keeps_the_complete_subject(self):
+        self.assertEqual(core.padded_crop(100, 80, (30, 20, 66, 61), 3), (28, 18, 68, 63))
+        self.assertEqual(core.padded_crop(100, 80, (0, 0, 100, 80), 20), (0, 0, 100, 80))
+        self.assertEqual(core.padded_crop(100, 80, (3, 4, 20, 30), 0), (3, 4, 20, 30))
+        for bounds in ((10, 10, 10, 10), (-1, 0, 10, 20), (0, 0, 101, 80)):
+            with self.assertRaises(ValueError):
+                core.padded_crop(100, 80, bounds)
+
     def test_camera_migration_discards_all_poses_and_expressions(self):
         old = {'poses': {'old': {}}, 'expressions': {'old': {}},
                'cameras': {'lens': {'preview_group': 'outfit_detail', 'camera_lens': 75}}}

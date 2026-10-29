@@ -42,6 +42,11 @@ bpy.ops.rigidbody.world_add(); world = scene.rigidbody_world; world.enabled = Tr
 target = bpy.data.objects.new('Existing MMD track target', None); scene.collection.objects.link(target)
 track = rig.pose.bones['頭'].constraints.new('COPY_LOCATION'); track.name = 'mmd_tools_rigid_track'; track.target = target
 track.mute = False
+scene.camera = addon.ensure_camera(scene)
+scene.render.image_settings.color_depth = '16'
+scene.view_settings.exposure = 1.25; scene.view_settings.gamma = .9
+scene.view_settings.use_curve_mapping = True
+color_state = (scene.view_settings.exposure, scene.view_settings.gamma, scene.view_settings.use_curve_mapping)
 frame = scene.frame_current; object_count = len(bpy.data.objects)
 # Raw values left in an older .blend must never reactivate removed features.
 settings['physics_mode'] = 1; settings['physics_frames'] = 240
@@ -56,6 +61,8 @@ with tempfile.TemporaryDirectory() as folder:
          patch('subprocess.Popen', side_effect=AssertionError('Physics worker started')):
         session = addon.RenderSession(bpy.context, fixture_plan); session.setup(bpy.context)
         assert session.manifest['deformation_mode'] == 'ARMATURE_STATIC'
+        assert scene.view_settings.exposure == 0 and scene.view_settings.gamma == 1
+        assert not scene.view_settings.use_curve_mapping and not scene.render.film_transparent
         assert not world.enabled and track.mute
         assert all(not m.show_viewport and not m.show_render for m, _, _ in modifier_flags)
         for shot in fixture_plan:
@@ -66,6 +73,8 @@ with tempfile.TemporaryDirectory() as folder:
         assert world.enabled and not track.mute
         assert all((m.show_viewport, m.show_render) == (v, r) for m, v, r in modifier_flags)
         assert len(bpy.data.objects) == object_count
+        assert scene.render.image_settings.color_depth == '16'
+        assert (scene.view_settings.exposure, scene.view_settings.gamma, scene.view_settings.use_curve_mapping) == color_state
         session = addon.RenderSession(bpy.context); session.setup(bpy.context)
         try:
             with patch.object(addon, 'configure_camera', side_effect=ValueError('Forced framing error')):

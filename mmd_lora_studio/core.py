@@ -67,6 +67,17 @@ def dataset_coverage(shots):
             'pose': 'tpose', 'expression': 'neutral'}
 
 
+def padded_crop(width, height, bounds, padding_percent=3):
+    """Half-open pixel rectangle, origin at the bottom left; never cut foreground."""
+    if width < 1 or height < 1 or not 0 <= padding_percent <= 20:
+        raise ValueError('裁剪尺寸或留白比例无效。')
+    left, bottom, right, top = bounds
+    if not (0 <= left < right <= width and 0 <= bottom < top <= height):
+        raise ValueError('角色轮廓为空或超出图像。')
+    pad = math.ceil(max(right-left, top-bottom)*padding_percent/100)
+    return max(0, left-pad), max(0, bottom-pad), min(width, right+pad), min(height, top+pad)
+
+
 class ShotSettings:
     """Camera overlay: the UI stays untouched while fitting a dataset view."""
     def __init__(self, settings, shot):

@@ -1,5 +1,6 @@
 """Automatic framing with explicit lens, aspect, orbit and composition controls."""
 import math
+import bpy
 
 from mathutils import Vector, Quaternion
 from .material_profiles import material_role
@@ -9,6 +10,57 @@ from .static_pose import find_bone
 CAMERA_FIELDS = ('camera_projection', 'camera_lens', 'camera_azimuth', 'camera_elevation', 'camera_roll',
                  'camera_zoom', 'camera_shift_x', 'camera_shift_y', 'camera_target_offset', 'camera_aspect',
                  'portrait_focus', 'margin', 'preview_group')
+
+DATA_FIELDS = ('type', 'lens', 'sensor_fit', 'sensor_width', 'sensor_height', 'shift_x', 'shift_y',
+               'ortho_scale', 'clip_start', 'clip_end')
+
+
+def ensure_camera(scene):
+    """Reuse one owned camera across characters, previews and render sessions."""
+    camera = next((o for o in scene.objects if o.type == 'CAMERA' and o.get('aniforge_camera')), None)
+    if camera is None:
+        camera = next((o for o in scene.objects if o.type == 'CAMERA' and o.get('aniforge_preview_for')), None)
+    if camera is None:
+        camera = bpy.data.objects.new('AniForge Camera', bpy.data.cameras.new('AniForge Camera'))
+        scene.collection.objects.link(camera)
+    camera['aniforge_camera'] = True
+    return camera
+
+
+def remember_camera(camera):
+    return camera.matrix_world.copy(), camera.rotation_mode, {key: getattr(camera.data, key) for key in DATA_FIELDS}
+
+
+def restore_camera(camera, state):
+    matrix, mode, values = state
+    camera.rotation_mode = mode
+    camera.matrix_world = matrix
+    for key, value in values.items():
+        setattr(camera.data, key, value)
+
+
+def white_world(scene):
+    world = scene.world
+    if world is None or not world.get('aniforge_white'):
+        world = bpy.data.worlds.new('AniForge White Background')
+        world['aniforge_white'] = True
+    world.use_nodes = True
+    world.color = (1, 1, 1)
+    world.node_tree.nodes['Background'].inputs[0].default_value = (1, 1, 1, 1)
+    world.node_tree.nodes['Background'].inputs[1].default_value = 1
+    scene.world = world
+    return world
+
+
+def white_view(scene):
+    """A white world must also display as white, rather than an AgX mid-grey."""
+    view = scene.view_settings
+    view.view_transform = 'Standard'
+    view.look = 'None'
+    view.exposure = 0
+    view.gamma = 1
+    view.use_curve_mapping = False
+    scene.render.film_transparent = False
 
 
 def resolution(settings):

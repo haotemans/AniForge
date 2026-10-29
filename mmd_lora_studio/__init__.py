@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 10, 1),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 10, 2),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 T-pose views',
     'category': 'Render',
@@ -8,6 +8,7 @@ bl_info = {
 import json
 from datetime import datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import bpy
 from bpy.props import StringProperty, EnumProperty, PointerProperty, IntProperty, FloatProperty, BoolProperty, FloatVectorProperty
@@ -17,7 +18,8 @@ from mathutils import Vector
 from .core import STYLES, GROUPS, GROUP_LABELS, BONES, recipe, three_view_recipe, dataset_coverage, caption, safe_name, write_json, validate_camera_library
 from .material_profiles import material_role, alpha_image, face_light, hair_color
 from .static_pose import find_bone, shape_blocks, apply_tpose, neutralize_face, CharacterState, has_animation
-from .camera import configure_camera, capture_camera, camera_apply, resolution
+from .camera import configure_camera, capture_camera, camera_apply, resolution, ensure_camera, remember_camera, restore_camera, white_world, white_view
+from .output import save_white_crop, show_output
 from . import ui
 
 
@@ -171,34 +173,66 @@ def camera_items(settings, context):
     return _CAMERA_ENUM_CACHE[names]
 
 
+_PENDING_PREVIEWS = {}
+
+
+def schedule_preview(settings, _context=None):
+    if settings.armature is None:
+        return
+    scene = settings.id_data
+    _PENDING_PREVIEWS[scene.as_pointer()] = scene
+    if not bpy.app.timers.is_registered(refresh_previews):
+        bpy.app.timers.register(refresh_previews, first_interval=.15)
+
+
+def refresh_previews():
+    for key, scene in list(_PENDING_PREVIEWS.items()):
+        try:
+            settings = scene.ml_settings
+            if settings.running:
+                continue
+            _PENDING_PREVIEWS.pop(key, None)
+            if not settings.armature:
+                continue
+            with bpy.context.temp_override(scene=scene, view_layer=scene.view_layers[0]):
+                update_preview_camera(bpy.context, settings, model_meshes(settings), selected_shot(settings))
+            settings.camera_status = '自动相机已就绪 · 白底'
+        except (ReferenceError, AttributeError):
+            _PENDING_PREVIEWS.pop(key, None)
+        except Exception as exc:
+            settings.camera_status = str(exc)
+    return .25 if _PENDING_PREVIEWS else None
+
+
 class MLSettings(bpy.types.PropertyGroup):
-    armature: PointerProperty(name='角色骨架', type=bpy.types.Object, poll=lambda self, obj: obj.type == 'ARMATURE')
+    armature: PointerProperty(name='角色骨架', type=bpy.types.Object, poll=lambda self, obj: obj.type == 'ARMATURE', update=schedule_preview)
     style: EnumProperty(name='游戏风格', items=[(k, v[0], '风格近似预设，非官方着色器') for k, v in STYLES.items()])
     output: StringProperty(name='输出目录', subtype='DIR_PATH', default='//lora_dataset')
     textures: StringProperty(name='贴图目录', subtype='DIR_PATH')
     trigger: StringProperty(name='角色触发词', default='my_character')
     tags: StringProperty(name='附加标签', default='anime style, simple background')
-    resolution: IntProperty(name='分辨率', default=1024, min=256, max=4096)
-    preview_group: EnumProperty(name='取景范围', items=[(v, label, '') for v, label in GROUP_LABELS.items()])
-    plan_index: IntProperty(name='视角', default=1, min=1, max=4, update=clamp_plan_index)
+    resolution: IntProperty(name='分辨率', default=1024, min=256, max=4096, update=schedule_preview)
+    preview_group: EnumProperty(name='取景范围', items=[(v, label, '') for v, label in GROUP_LABELS.items()], update=schedule_preview)
+    plan_index: IntProperty(name='视角', default=1, min=1, max=4, update=schedule_preview)
     preview_view: EnumProperty(name='观察方向', items=[('FRONT', '正面', '0°', 1), ('LEFT', '左侧', '90°', 2),
                                                      ('RIGHT', '右侧', '-90°', 3), ('BACK', '背面', '180°', 4)],
                                get=lambda self: min(4, max(1, self.plan_index)),
                                set=lambda self, value: setattr(self, 'plan_index', value), options={'SKIP_SAVE'})
-    front: FloatProperty(name='角色正面角度', default=0, min=-180, max=180, description='0 表示朝向世界 -Y；90 表示朝向 +X')
-    margin: FloatProperty(name='构图留白', default=1.18, min=1.02, max=2)
-    camera_projection: EnumProperty(name='投影', items=[('ORTHO', '正交', ''), ('PERSP', '透视', '')], default='ORTHO')
-    camera_lens: FloatProperty(name='焦距 (mm)', default=85, min=20, max=200)
-    camera_azimuth: FloatProperty(name='环绕偏移 (°)', default=0, min=-180, max=180)
-    camera_elevation: FloatProperty(name='俯仰角度 (°)', default=0, min=-60, max=60)
-    camera_roll: FloatProperty(name='画面倾斜 (°)', default=0, min=-45, max=45)
-    camera_zoom: FloatProperty(name='构图放大', default=1, min=.5, max=2)
-    camera_shift_x: FloatProperty(name='水平移轴', default=0, min=-.4, max=.4)
-    camera_shift_y: FloatProperty(name='垂直移轴', default=0, min=-.4, max=.4)
-    camera_target_offset: FloatVectorProperty(name='对焦偏移（身高比例）', size=3, default=(0, 0, 0), min=-.5, max=.5)
-    camera_aspect: EnumProperty(name='画幅', items=[('SQUARE', '1:1 方形', ''), ('PORTRAIT', '3:4 竖幅', ''), ('LANDSCAPE', '4:3 横幅', '')], default='SQUARE')
-    portrait_focus: EnumProperty(name='肖像范围', items=[('HEAD', '头肩（按脸部定位）', ''), ('FACE', '脸部特写', '')], default='HEAD')
+    front: FloatProperty(name='角色正面角度', default=0, min=-180, max=180, description='0 表示朝向世界 -Y；90 表示朝向 +X', update=schedule_preview)
+    margin: FloatProperty(name='构图留白', default=1.18, min=1.02, max=2, update=schedule_preview)
+    camera_projection: EnumProperty(name='投影', items=[('ORTHO', '正交', ''), ('PERSP', '透视', '')], default='ORTHO', update=schedule_preview)
+    camera_lens: FloatProperty(name='焦距 (mm)', default=85, min=20, max=200, update=schedule_preview)
+    camera_azimuth: FloatProperty(name='环绕偏移 (°)', default=0, min=-180, max=180, update=schedule_preview)
+    camera_elevation: FloatProperty(name='俯仰角度 (°)', default=0, min=-60, max=60, update=schedule_preview)
+    camera_roll: FloatProperty(name='画面倾斜 (°)', default=0, min=-45, max=45, update=schedule_preview)
+    camera_zoom: FloatProperty(name='构图放大', default=1, min=.5, max=2, update=schedule_preview)
+    camera_shift_x: FloatProperty(name='水平移轴', default=0, min=-.4, max=.4, update=schedule_preview)
+    camera_shift_y: FloatProperty(name='垂直移轴', default=0, min=-.4, max=.4, update=schedule_preview)
+    camera_target_offset: FloatVectorProperty(name='对焦偏移（身高比例）', size=3, default=(0, 0, 0), min=-.5, max=.5, update=schedule_preview)
+    camera_aspect: EnumProperty(name='画幅', items=[('SQUARE', '1:1 方形', ''), ('PORTRAIT', '3:4 竖幅', ''), ('LANDSCAPE', '4:3 横幅', '')], default='SQUARE', update=schedule_preview)
+    portrait_focus: EnumProperty(name='肖像范围', items=[('HEAD', '头肩（按脸部定位）', ''), ('FACE', '脸部特写', '')], default='HEAD', update=schedule_preview)
     camera_name: StringProperty(name='镜头预设名称', maxlen=80)
+    camera_status: StringProperty(default='', options={'SKIP_SAVE'})
     camera_presets_json: StringProperty(default='')
     camera_preset: EnumProperty(name='镜头预设', items=camera_items)
     material_profiles: BoolProperty(name='头发 / 脸部优化', default=True)
@@ -207,12 +241,16 @@ class MLSettings(bpy.types.PropertyGroup):
     face_shadow_strength: FloatProperty(name='脸部阴影层强度', default=.3, min=0, max=1)
     running: BoolProperty(default=False, options={'SKIP_SAVE'})
     progress: StringProperty(default='等待开始', options={'SKIP_SAVE'})
+    auto_crop: BoolProperty(name='自动裁掉白边', default=True)
+    crop_padding: FloatProperty(name='输出留白 (%)', default=3, min=0, max=20,
+                               description='根据角色透明轮廓裁剪，边缘保留少量白色空间')
     ui_textures: BoolProperty(name='贴图修复', default=False)
     ui_material: BoolProperty(name='材质微调', default=False)
     ui_camera: BoolProperty(name='高级镜头', default=False)
     ui_presets: BoolProperty(name='镜头预设', default=False)
     ui_tags: BoolProperty(name='附加训练标签', default=False)
     ui_developer: BoolProperty(name='开发检查', default=False)
+
 
 
 class ML_OT_materials(bpy.types.Operator):
@@ -337,16 +375,17 @@ def update_preview_camera(context, settings, meshes, shot):
     apply_tpose(settings)
     neutralize_face(settings.armature, meshes)
     context.view_layer.update()
-    camera = next((o for o in context.scene.objects if o.type == 'CAMERA' and o.get('aniforge_preview_for') == settings.armature.name), None)
-    if not camera:
-        camera = bpy.data.objects.new('AniForge Preview Camera', bpy.data.cameras.new('AniForge Preview Camera'))
-        context.scene.collection.objects.link(camera)
-        camera['aniforge_preview_for'] = settings.armature.name
+    camera = ensure_camera(context.scene)
+    white_world(context.scene)
+    white_view(context.scene)
     context.scene.render.pixel_aspect_x = context.scene.render.pixel_aspect_y = 1
     configure_camera(context, settings, meshes, camera, shot)
     context.scene.camera = camera
     if context.area and context.area.type == 'VIEW_3D':
         context.space_data.region_3d.view_perspective = 'CAMERA'
+        context.space_data.shading.background_type = 'WORLD'
+        context.space_data.shading.use_scene_world = True
+    settings.camera_status = '自动相机已就绪 · 白底'
     return camera
 
 
@@ -467,6 +506,8 @@ class RenderSession:
         self.settings = self.scene.ml_settings
         self.plan = list(shots) if shots is not None else []
         self.meshes = model_meshes(self.settings)
+        if self.settings.running:
+            raise ValueError('已有渲染任务正在进行。')
         if has_animation(self.settings.armature, self.meshes):
             raise ValueError('请先在角色副本中解除动画，避免动画覆盖 T Pose。')
         self.created = []; self.manifest = None; self.folder = None
@@ -477,6 +518,9 @@ class RenderSession:
                       r.resolution_percentage, r.image_settings.file_format, r.image_settings.color_mode,
                       r.film_transparent, self.scene.world, self.scene.view_settings.view_transform,
                       r.use_file_extension, r.use_border, r.use_compositing, r.use_sequencer, r.pixel_aspect_x, r.pixel_aspect_y)
+        self.color_depth = r.image_settings.color_depth
+        view = self.scene.view_settings
+        self.color_view = {key: getattr(view, key) for key in ('view_transform', 'look', 'exposure', 'gamma', 'use_curve_mapping')}
         self.visibility = [(o, o.hide_render) for o in self.scene.objects if o.type in {'MESH', 'LIGHT'} and o not in self.meshes]
         self.rigidbody_world = self.scene.rigidbody_world
         self.rigidbody_enabled = self.rigidbody_world.enabled if self.rigidbody_world else None
@@ -501,7 +545,10 @@ class RenderSession:
                          'deformation_mode': 'ARMATURE_STATIC',
                          'camera_settings': capture_camera(self.settings),
                          'pose': 'tpose', 'expression': 'neutral'}
+        self.manifest['output_processing'] = {'background': 'white', 'auto_crop': self.settings.auto_crop,
+                                              'padding_percent': self.settings.crop_padding}
         self.flush()
+        self.settings.running = True
         if self.rigidbody_world:
             self.rigidbody_world.enabled = False
         for modifier, _, _ in self.simulation_modifiers:
@@ -510,7 +557,9 @@ class RenderSession:
         neutralize_face(self.settings.armature, self.meshes)
         for obj, _ in self.visibility:
             obj.hide_render = True
-        self.camera = self.create_object('LoRA Camera', 'CAMERA'); self.camera.data.type = 'ORTHO'
+        self.camera_preexisting = any(o.type == 'CAMERA' and (o.get('aniforge_camera') or o.get('aniforge_preview_for')) for o in self.scene.objects)
+        self.camera = ensure_camera(self.scene)
+        self.camera_state = remember_camera(self.camera) if self.camera_preexisting else None
         self.scene.camera = self.camera
         lo, hi = bounds(self.meshes, context.evaluated_depsgraph_get())
         center = (lo + hi) / 2; h = hi.z - lo.z
@@ -527,8 +576,9 @@ class RenderSession:
         r.resolution_x, r.resolution_y = resolution(self.settings); r.resolution_percentage = 100
         r.pixel_aspect_x = r.pixel_aspect_y = 1
         r.image_settings.file_format = 'PNG'; r.image_settings.color_mode = 'RGB'; r.film_transparent = False
+        r.image_settings.color_depth = '8'
         r.use_file_extension = True; r.use_border = False; r.use_compositing = False; r.use_sequencer = False
-        self.scene.view_settings.view_transform = 'Standard'
+        white_view(self.scene)
 
     def flush(self):
         write_json(self.folder / 'manifest.json', self.manifest)
@@ -550,14 +600,29 @@ class RenderSession:
     def render(self, context, shot):
         image, expression_keys, pose_bones = self.prepare_shot(context, shot)
         group = shot['group']
-        bpy.ops.render.render(write_still=True)
+        r = self.scene.render
+        with TemporaryDirectory(prefix='.aniforge_', dir=self.folder) as temporary:
+            raw = Path(temporary) / 'character_rgba.png'
+            r.filepath = str(raw)
+            r.image_settings.color_mode = 'RGBA'; r.image_settings.color_depth = '16'; r.film_transparent = True
+            try:
+                bpy.ops.render.render(write_still=True)
+                r.image_settings.color_mode = 'RGB'; r.image_settings.color_depth = '8'; r.film_transparent = False
+                self.output_meta = save_white_crop(self.scene, raw, image, self.settings.crop_padding, self.settings.auto_crop)
+            finally:
+                r.filepath = str(image)
+                r.image_settings.color_mode = 'RGB'; r.image_settings.color_depth = '8'; r.film_transparent = False
         if not image.is_file():
             raise RuntimeError('渲染未生成目标 PNG。')
         tags = caption(self.settings.trigger, group, shot.get('view', 'front'), self.settings.tags)
         image.with_suffix('.txt').write_text(tags + '\n', encoding='utf-8')
         self.manifest['shots'].append(dict(shot, pose='tpose', expression='neutral', image=str(image.relative_to(self.folder)), caption=tags,
-                                           cleared_face_keys=expression_keys, camera=self.camera_meta, deformation_mode='ARMATURE_STATIC'))
+                                           cleared_face_keys=expression_keys, camera=self.camera_meta, output=self.output_meta, deformation_mode='ARMATURE_STATIC'))
         self.flush()
+        try:
+            show_output(context, image)
+        except (RuntimeError, ReferenceError):
+            pass
 
     def close(self, status, error=''):
         if self.closed:
@@ -574,6 +639,13 @@ class RenderSession:
              r.resolution_percentage, r.image_settings.file_format, r.image_settings.color_mode,
              r.film_transparent, self.scene.world, self.scene.view_settings.view_transform,
              r.use_file_extension, r.use_border, r.use_compositing, r.use_sequencer, r.pixel_aspect_x, r.pixel_aspect_y) = self.saved
+            r.image_settings.color_depth = self.color_depth
+            for key, value in self.color_view.items():
+                setattr(self.scene.view_settings, key, value)
+            if getattr(self, 'camera_state', None) is not None:
+                restore_camera(self.camera, self.camera_state)
+            if hasattr(self, 'camera') and self.scene.camera is None:
+                self.scene.camera = self.camera
             for obj, hidden in self.visibility:
                 obj.hide_render = hidden
             for obj, data, kind in reversed(self.created):
@@ -685,6 +757,7 @@ REMOVED_SETTINGS = ('presets_json', 'pose', 'expression', 'pose_strength', 'expr
 
 @bpy.app.handlers.persistent
 def migrate_settings(_=None):
+    _PENDING_PREVIEWS.clear()
     for scene in getattr(bpy.data, 'scenes', ()):
         settings = scene.ml_settings
         if settings.get('presets_json') and not settings.camera_presets_json:
@@ -696,6 +769,7 @@ def migrate_settings(_=None):
             if name in settings:
                 del settings[name]
         clamp_plan_index(settings)
+        schedule_preview(settings)
 
 
 def register():
@@ -712,6 +786,9 @@ def unregister():
         raise RuntimeError('请先结束批量渲染再禁用插件。')
     if migrate_settings in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(migrate_settings)
+    if bpy.app.timers.is_registered(refresh_previews):
+        bpy.app.timers.unregister(refresh_previews)
+    _PENDING_PREVIEWS.clear()
     del bpy.types.Scene.ml_settings
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

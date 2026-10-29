@@ -68,6 +68,14 @@ rig.rotation_euler.z = 0; rig.scale = (1, 1, 1); settings.front = 0
 baseline.restore()
 assert not driver.mute and not constraint.mute and abs(face.value-.8) < .0001
 old = rig.pose.bones['左腕'].matrix_basis.copy()
+addon.refresh_previews()
+automatic_camera = scene.camera
+assert automatic_camera and automatic_camera.get('aniforge_camera')
+assert scene.world.get('aniforge_white') and tuple(scene.world.color) == (1, 1, 1)
+assert not scene.render.film_transparent
+assert addon.ensure_camera(scene) == automatic_camera
+assert len([o for o in scene.objects if o.type == 'CAMERA']) == 1
+baseline.restore()
 
 # Removed settings must never recreate a saved gesture or trigger native calls.
 settings['presets_json'] = '{"poses":{"old":{}},"expressions":{"old":{}},"cameras":{"old lens":{"camera_lens":75}}}'
@@ -105,9 +113,11 @@ with tempfile.TemporaryDirectory() as folder:
     assert 'My camera' in addon.camera_library(settings)['cameras']
     for projection in ('ORTHO', 'PERSP'):
         settings.camera_projection = projection
+        camera_state = addon.remember_camera(automatic_camera)
         session = addon.RenderSession(bpy.context, addon.recipe())
         try:
             session.setup(bpy.context)
+            assert session.camera == automatic_camera
             for shot in addon.recipe():
                 session.prepare_shot(bpy.context, shot)
                 assert_tpose()
@@ -123,6 +133,11 @@ with tempfile.TemporaryDirectory() as folder:
         finally:
             session.close('checked_without_rendering')
         assert not driver.mute and not constraint.mute
+        assert scene.camera == automatic_camera
+        assert len([o for o in scene.objects if o.type == 'CAMERA']) == 1
+        restored = addon.remember_camera(automatic_camera)
+        assert max(abs(restored[0][i][j]-camera_state[0][i][j]) for i in range(4) for j in range(4)) < 1e-5
+        assert restored[1:] == camera_state[1:], (restored[1:], camera_state[1:])
         assert abs(face.value-.8) < .0001 and abs(shape.value-.3) < .0001
         assert all(abs(rig.pose.bones['左腕'].matrix_basis[i][j]-old[i][j]) < 1e-6 for i in range(4) for j in range(4))
     for test_only, count in ((True, 3), (False, 16)):

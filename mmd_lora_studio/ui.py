@@ -83,6 +83,7 @@ class ML_PT_panel(bpy.types.Panel):
     def draw(self, context):
         settings = context.scene.ml_settings
         self.layout.label(text='T Pose · 16 张标准视图', icon='RENDER_STILL')
+        self.layout.label(text='自动相机 · 白底 · 主体裁剪', icon='VIEW_CAMERA')
         if settings.running:
             box = self.layout.box()
             box.label(text=status(settings), icon='TIME')
@@ -149,7 +150,7 @@ class ML_PT_framing(bpy.types.Panel):
             col.prop(settings, 'portrait_focus', text='肖像范围')
         actions = col.column(align=True); actions.enabled = ready(context)
         actions.scale_y = 1.15
-        actions.operator('ml.shot_plan', text='更新相机预览 · 不出图', icon='VIEW_CAMERA')
+        actions.operator('ml.shot_plan', text='刷新自动相机 · 不出图', icon='VIEW_CAMERA')
         actions.operator('ml.preview', text='渲染当前视图 · 1 张', icon='RENDER_STILL')
         advanced = fold(col, settings, 'ui_camera', '高级镜头')
         if advanced is not None:
@@ -157,6 +158,7 @@ class ML_PT_framing(bpy.types.Panel):
                                 ('camera_azimuth', '环绕偏移'), ('camera_elevation', '俯仰'), ('camera_roll', '倾斜'),
                                 ('camera_shift_x', '水平移轴'), ('camera_shift_y', '垂直移轴'), ('camera_target_offset', '对焦偏移')):
                 advanced.prop(settings, prop, text=label)
+            advanced.prop(settings, 'crop_padding', text='输出留白 (%)')
         presets = fold(col, settings, 'ui_presets', '镜头预设')
         if presets is not None:
             presets.prop(settings, 'camera_preset', text='已有预设')
@@ -179,13 +181,15 @@ class ML_PT_output(bpy.types.Panel):
         settings = context.scene.ml_settings
         col = controls(self.layout, settings)
         col.prop(settings, 'trigger', text='角色触发词')
-        col.prop(settings, 'resolution', text='图像长边 (px)')
+        col.prop(settings, 'resolution', text='渲染长边 (px)')
+        col.prop(settings, 'auto_crop', text='自动裁掉白边')
         row = col.row(align=True)
         row.prop(settings, 'output', text='输出到')
         row.operator('ml.open_output', text='', icon='FILE_FOLDER')
         width, height = resolution(settings)
         summary = col.box()
-        summary.label(text=f'{width} × {height} px · PNG + 标签', icon='IMAGE_DATA')
+        summary.label(text=f'渲染画布 {width} × {height} px', icon='IMAGE_DATA')
+        summary.label(text='白底 · 裁剪后尺寸随主体变化' if settings.auto_crop else '白底 · PNG + 标签')
         counts = summary.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
         for label in GROUP_LABELS.values():
             counts.label(text=label+' 4 张')

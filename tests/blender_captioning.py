@@ -1,0 +1,154 @@
+"""Local mock vision API, in-memory 1024 cards, 8+8 batches and TXT; no renders."""
+import base64
+import hashlib
+import json
+import shutil
+import struct
+import sys
+import tempfile
+import time
+import zlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from threading import Thread
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+import bpy
+import numpy as np
+import mmd_lora_studio as addon
+from mmd_lora_studio import captioning
+from mmd_lora_studio.caption_api import ApiConfig
+
+addon.register()
+settings = bpy.context.scene.ml_settings
+settings.trigger = 'LOCAL_CHARACTER_A'
+assert 'api_key' not in settings.bl_rna.properties
+requests = []; invalid = [False]
+
+
+def check_png(data):
+    assert data[:8] == b'\x89PNG\r\n\x1a\n'
+    position = 8; compressed = b''
+    while position < len(data):
+        size = struct.unpack('>I', data[position:position+4])[0]
+        kind = data[position+4:position+8]
+        value = data[position+8:position+8+size]
+        if kind == b'IHDR':
+            assert struct.unpack('>IIBBBBB', value) == (1024, 1024, 8, 2, 0, 0, 0)
+        if kind == b'IDAT': compressed += value
+        position += size+12
+    rows = np.frombuffer(zlib.decompress(compressed), dtype=np.uint8).reshape(1024, 3073)
+    assert np.all(rows[:, 0] == 0)
+    rgb = rows[:, 1:].reshape(1024, 1024, 3)
+    assert np.all(rgb[0, 0] == 255)  # White aspect-preserving padding.
+    assert tuple(rgb[300, 100]) == (255, 0, 0), rgb[300, 100]
+    assert tuple(rgb[700, 100]) == (0, 0, 255), rgb[700, 100]
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        raw = self.rfile.read(int(self.headers['Content-Length']))
+        assert b'LOCAL_CHARACTER' not in raw
+        payload = json.loads(raw)
+        content = payload['messages'][1]['content']
+        ids = json.loads(content[0]['text'])['image_ids']
+        images = [part['image_url']['url'] for part in content if part['type'] == 'image_url']
+        assert len(ids) == len(images) and len(images) <= 8
+        for image in images:
+            check_png(base64.b64decode(image.split(',', 1)[1]))
+        requests.append(len(images))
+        rows = [{'id': key, 'description': 'Detailed visible red and blue clothing for '+key+'.'} for key in reversed(ids)]
+        if invalid[0]: rows = rows[:-1]
+        response = json.dumps({'choices': [{'message': {'content': json.dumps({'images': rows})}}]}).encode()
+        self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(response)
+    def log_message(self, *args): pass
+
+
+server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+thread = Thread(target=server.serve_forever, daemon=True); thread.start()
+config = ApiConfig(f'http://127.0.0.1:{server.server_port}/v1', 'vision-unit', 'unit-test-key')
+
+
+def fixture(root, source, count):
+    root.mkdir()
+    shots = []
+    for i in range(1, count+1):
+        image = root/f'frame_{i:02}.png'; shutil.copyfile(source, image)
+        shots.append({'image': image.name, 'caption_status': 'API_PENDING'})
+    (root/'manifest.json').write_text(json.dumps({'shots': shots}), encoding='utf-8')
+
+
+def drain():
+    deadline = time.monotonic()+10
+    while captioning.busy() and time.monotonic() < deadline:
+        captioning.tick(); time.sleep(.01)
+    assert not captioning.busy(), 'Caption job did not finish'
+
+
+try:
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        source = root/'source.png'
+        image = bpy.data.images.new('Caption fixture', width=64, height=32, alpha=True)
+        pixels = np.zeros((32, 64, 4), dtype=np.float32); pixels[:, :, 3] = 1
+        pixels[:16, :, 2] = 1; pixels[16:, :, 0] = 1
+        image.pixels.foreach_set(pixels.ravel())
+        image.filepath_raw = str(source); image.file_format = 'PNG'; image.save()
+        bpy.data.images.remove(image)
+        image_count = len(bpy.data.images)
+        dataset = root/'dataset'; fixture(dataset, source, 16)
+        hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in dataset.glob('*.png')}
+        job = captioning.start(bpy.context, dataset, config=config, blocking=True)
+        assert requests == [8, 8] and job.done == 16 and job.failed == 0
+        assert json.loads((dataset/'manifest.json').read_text())['dataset_status'] == 'READY'
+        assert len(list(dataset.glob('*.txt'))) == 16
+        for i in range(1, 17):
+            text = (dataset/f'frame_{i:02}.txt').read_text(encoding='utf-8')
+            assert text.startswith('@3d, LOCAL_CHARACTER_A, ')
+            assert f'image_{i:03}' in text
+        assert 'unit-test-key' not in (dataset/'caption_cache.json').read_text()
+        assert len(bpy.data.images) == image_count
+
+        # Renaming the local trigger rewrites prefixes without any API calls.
+        settings.trigger = 'LOCAL_CHARACTER_B'
+        captioning.start(bpy.context, dataset, config=config, blocking=True)
+        assert requests == [8, 8]
+        assert all(p.read_text().startswith('@3d, LOCAL_CHARACTER_B, ') for p in dataset.glob('*.txt'))
+
+        cache_path = dataset/'caption_cache.json'; cache = json.loads(cache_path.read_text())
+        for i in range(1, 9):
+            del cache['images'][f'frame_{i:02}.png']
+            (dataset/f'frame_{i:02}.txt').unlink()
+        cache_path.write_text(json.dumps(cache), encoding='utf-8')
+        invalid[0] = True
+        job = captioning.start(bpy.context, dataset, config=config, blocking=True)
+        assert job.done == 8 and job.failed == 8
+        assert json.loads((dataset/'manifest.json').read_text())['dataset_status'] == 'CAPTION_FAILED'
+        assert len(list(dataset.glob('*.txt'))) == 8
+        invalid[0] = False
+        job = captioning.start(bpy.context, dataset, config=config, blocking=True)
+        assert requests == [8, 8, 8, 8] and job.done == 16
+        assert hashes == {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in dataset.glob('*.png')}
+        assert not list(dataset.glob('*.tmp'))
+
+        asynchronous = root/'async'; fixture(asynchronous, source, 2)
+        captioning.start(bpy.context, asynchronous, config=config, blocking=False)
+        assert settings.caption_running
+        drain()
+        assert requests[-1] == 2 and len(list(asynchronous.glob('*.txt'))) == 2
+        assert not settings.caption_running
+
+        cancelled = root/'cancelled'; fixture(cancelled, source, 16)
+        job = captioning.start(bpy.context, cancelled, config=config, blocking=False)
+        captioning.tick(); job.stop_after_batch = True
+        drain()
+        assert job.done == 8 and len(list(cancelled.glob('*.txt'))) == 8
+        assert len(requests) == 6 and requests[-1] == 8
+        assert '停止' in settings.caption_status
+        assert len(bpy.data.images) == image_count
+finally:
+    captioning.shutdown(); addon.unregister()
+    server.shutdown(); server.server_close(); thread.join()
+
+print('CAPTIONING_OK: 1024 memory PNGs, 8+8 JSON, reverse ID mapping, 1 image/1 TXT, cached local prefixes, retry/async/cancel; zero renders')

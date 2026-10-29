@@ -25,7 +25,7 @@ class Driver:
         self.rendered = []; self.closed = []; self.removed = []; self.reports = []
         self.ends = 0
         self._session = SimpleNamespace(folder=Path('unused'), render=self.render, close=self.close)
-        self.settings = SimpleNamespace(running=True, progress='')
+        self.settings = SimpleNamespace(running=True, progress='', api_caption=False)
         self.fail_render = fail_render; self.fail_close = fail_close
         manager = SimpleNamespace(event_timer_remove=self.removed.append, progress_end=self.end,
                                   progress_update=lambda index: None)
@@ -83,5 +83,12 @@ with patch.object(addon, 'monotonic', lambda: clock[0]):
         assert driver._timer is None and driver._session is None
         assert driver.ends == len(driver.removed) == 1
         assert not driver._in_step
+
+    driver = Driver(1); driver.settings.api_caption = True
+    def start_after_restore(context, folder):
+        assert not driver.settings.running and driver.closed == [('complete', '')]
+    with patch.object(addon.captioning, 'start', side_effect=start_after_restore) as start:
+        assert driver.modal(driver.context, timer_event) == {'FINISHED'}
+        start.assert_called_once_with(driver.context, Path('unused'))
 
 print('MODAL_OK: real Event RNA, no timer attribute, cadence/reentry/3+16 dispatch, Esc and failure cleanup; zero renders')

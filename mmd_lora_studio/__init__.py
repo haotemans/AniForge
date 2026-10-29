@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 10, 5),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 11, 0),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 T-pose views',
     'category': 'Render',
@@ -21,7 +21,7 @@ from .material_profiles import material_role, alpha_image, face_light, hair_colo
 from .static_pose import find_bone, shape_blocks, apply_tpose, neutralize_face, CharacterState, has_animation
 from .camera import configure_camera, capture_camera, camera_apply, resolution, ensure_camera, remember_camera, restore_camera, white_world, white_view
 from .output import save_white_crop, show_output
-from . import ui
+from . import ui, captioning
 
 
 def model_meshes(settings):
@@ -201,6 +201,11 @@ def resolution_changed(settings, context):
     schedule_preview(settings, context)
 
 
+def caption_mode_changed(settings, _context):
+    if settings.api_caption:
+        settings.ui_tags = True
+
+
 def refresh_previews():
     for key, scene in list(_PENDING_PREVIEWS.items()):
         try:
@@ -227,6 +232,12 @@ class MLSettings(bpy.types.PropertyGroup):
     textures: StringProperty(name='贴图目录', subtype='DIR_PATH')
     trigger: StringProperty(name='角色触发词', default='my_character')
     tags: StringProperty(name='附加标签', default='anime style, simple background')
+    api_caption: BoolProperty(name='API 自动打标', default=False, update=caption_mode_changed)
+    caption_running: BoolProperty(default=False, options={'SKIP_SAVE'})
+    caption_status: StringProperty(default='', options={'SKIP_SAVE'})
+    caption_error: StringProperty(default='', options={'SKIP_SAVE'})
+    caption_folder: StringProperty(name='已有图片目录', subtype='DIR_PATH', default='')
+    last_render_folder: StringProperty(default='', subtype='DIR_PATH')
     resolution: IntProperty(name='分辨率', default=4096, min=256, max=4096, update=resolution_changed)
     preview_group: EnumProperty(name='取景范围', items=[(v, label, '') for v, label in GROUP_LABELS.items()], update=schedule_preview)
     plan_index: IntProperty(name='视角', default=1, min=1, max=4, update=schedule_preview)
@@ -555,7 +566,10 @@ class RenderSession:
         root = Path(bpy.path.abspath(self.settings.output)).resolve()
         self.folder = root / (safe_name(self.settings.trigger) + '_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
         self.folder.mkdir(parents=True, exist_ok=False)
+        self.settings.last_render_folder = str(self.folder)
+        self.settings.caption_status = '等待渲染完成后 API 打标' if self.settings.api_caption else ''
         self.manifest = {'status': 'running', 'style': self.settings.style, 'blender': bpy.app.version_string,
+                         'dataset_status': 'RENDERING',
                          'warning': 'Game styles are approximations. Review poses, crops and captions before training.',
                          'shots': [], 'recipe': self.plan, 'planned_coverage': dataset_coverage(self.plan),
                          'deformation_mode': 'ARMATURE_STATIC',
@@ -630,9 +644,11 @@ class RenderSession:
                 r.image_settings.color_mode = 'RGB'; r.image_settings.color_depth = '8'; r.film_transparent = False
         if not image.is_file():
             raise RuntimeError('渲染未生成目标 PNG。')
-        tags = caption(self.settings.trigger, group, shot.get('view', 'front'), self.settings.tags)
-        image.with_suffix('.txt').write_text(tags + '\n', encoding='utf-8')
+        tags = '' if self.settings.api_caption else caption(self.settings.trigger, group, shot.get('view', 'front'), self.settings.tags)
+        if not self.settings.api_caption:
+            image.with_suffix('.txt').write_text(tags + '\n', encoding='utf-8')
         self.manifest['shots'].append(dict(shot, pose='tpose', expression='neutral', image=str(image.relative_to(self.folder)), caption=tags,
+                                           caption_status='API_PENDING' if self.settings.api_caption else 'BASIC',
                                            cleared_face_keys=expression_keys, camera=self.camera_meta, output=self.output_meta, deformation_mode='ARMATURE_STATIC'))
         self.flush()
         try:
@@ -672,6 +688,7 @@ class RenderSession:
         finally:
             self.settings.running = False
             if self.manifest is not None:
+                self.manifest['dataset_status'] = ('CAPTION_PENDING' if self.settings.api_caption else 'READY') if status in {'complete', 'preview', 'three_views'} else 'INCOMPLETE'
                 self.manifest['status'] = status; self.manifest['error'] = error; self.flush()
 
 
@@ -686,7 +703,7 @@ class ML_OT_render(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return not context.scene.ml_settings.running
+        return not context.scene.ml_settings.running and not captioning.busy()
 
     def finish(self, context, status, error=''):
         if self._finished:
@@ -712,6 +729,12 @@ class ML_OT_render(bpy.types.Operator):
             context.window_manager.progress_end()
         if cleanup_error:
             self.report({'ERROR'}, '渲染状态清理失败：'+cleanup_error)
+        elif status == 'complete' and context.scene.ml_settings.api_caption:
+            try:
+                captioning.start(context, session.folder)
+            except Exception as exc:
+                context.scene.ml_settings.caption_status = '图片已保存，API 打标未完成：'+str(exc)
+                self.report({'WARNING'}, context.scene.ml_settings.caption_status)
         return not cleanup_error
 
     def execute(self, context):
@@ -723,6 +746,7 @@ class ML_OT_render(bpy.types.Operator):
         settings = context.scene.ml_settings
         self.shots = three_view_recipe(settings.preview_group) if self.test_only else dataset_plan(settings)
         try:
+            captioning.preflight(context)
             self._session = RenderSession(context, self.shots); self._session.setup(context)
             context.scene.ml_settings.running = True
             context.window_manager.progress_begin(0, len(self.shots))
@@ -777,16 +801,23 @@ class ML_OT_preview(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return not context.scene.ml_settings.running
+        return not context.scene.ml_settings.running and not captioning.busy()
 
     def execute(self, context):
         session = None
         try:
             settings = context.scene.ml_settings
+            captioning.preflight(context)
             shot = selected_shot(settings)
             session = RenderSession(context, [shot]); session.setup(context)
             session.render(context, shot)
             session.close('preview')
+            if settings.api_caption:
+                try:
+                    captioning.start(context, session.folder)
+                except Exception as exc:
+                    settings.caption_status = '图片已保存，API 打标未完成：'+str(exc)
+                    self.report({'WARNING'}, settings.caption_status)
             self.report({'INFO'}, '预览已写入：' + str(session.folder))
             return {'FINISHED'}
         except Exception as exc:
@@ -797,7 +828,7 @@ class ML_OT_preview(bpy.types.Operator):
 
 CLASSES = (MLSettings, ML_OT_materials, ML_OT_textures, ML_OT_assign_textures,
            ML_OT_camera_preset, ML_OT_import_cameras, ML_OT_export_cameras,
-           ML_OT_tpose, ML_OT_frame_camera, ML_OT_shot_plan, ML_OT_render, ML_OT_preview, *ui.CLASSES)
+           ML_OT_tpose, ML_OT_frame_camera, ML_OT_shot_plan, ML_OT_render, ML_OT_preview, *captioning.CLASSES, *ui.CLASSES)
 
 # Removed RNA/ID properties must not reactivate old workflows in saved projects.
 REMOVED_SETTINGS = ('presets_json', 'pose', 'expression', 'pose_strength', 'expression_strength', 'head_angles',
@@ -834,12 +865,17 @@ def register():
     bpy.types.Scene.ml_settings = PointerProperty(type=MLSettings)
     if migrate_settings not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(migrate_settings)
+    if captioning.on_load not in bpy.app.handlers.load_pre:
+        bpy.app.handlers.load_pre.append(captioning.on_load)
     migrate_settings()
 
 
 def unregister():
     if any(scene.ml_settings.running for scene in getattr(bpy.data, 'scenes', ())):
         raise RuntimeError('请先结束批量渲染再禁用插件。')
+    captioning.shutdown()
+    if captioning.on_load in bpy.app.handlers.load_pre:
+        bpy.app.handlers.load_pre.remove(captioning.on_load)
     if migrate_settings in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(migrate_settings)
     if bpy.app.timers.is_registered(refresh_previews):

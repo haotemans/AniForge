@@ -94,7 +94,7 @@ def caption(trigger, group, view, extra=''):
     direction = {'front': 'front view', 'left': 'left side view', 'right': 'right side view', 'back': 'from behind', 'side': 'side view'}
     # Cropped portraits do not show the arms and should not teach a visible T pose.
     pose = 't-pose' if group in {'half_body', 'full_body'} else ''
-    return ', '.join(x for x in (trigger.strip(), '1person', framing[group], direction[view], pose, extra.strip()) if x)
+    return ', '.join(x for x in ('@3d', trigger.strip(), '1person', framing[group], direction[view], pose, extra.strip()) if x)
 
 
 def validate_camera_library(value):

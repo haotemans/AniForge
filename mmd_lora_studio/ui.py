@@ -5,6 +5,7 @@ import bpy
 
 from .camera import resolution
 from .core import GROUP_LABELS
+from . import captioning
 
 
 def ready(context):
@@ -14,7 +15,7 @@ def ready(context):
 
 def controls(layout, settings):
     col = layout.column()
-    col.enabled = not settings.running
+    col.enabled = not (settings.running or settings.caption_running)
     col.use_property_split = True
     col.use_property_decorate = False
     return col
@@ -90,6 +91,12 @@ class ML_PT_panel(bpy.types.Panel):
             box.label(text='Esc：当前图片完成后停止')
         elif settings.progress != '等待开始':
             self.layout.label(text=status(settings), icon='ERROR' if settings.progress.startswith('failed:') else 'INFO')
+        if settings.caption_status:
+            self.layout.label(text=settings.caption_status, icon='INFO')
+        if settings.caption_error:
+            self.layout.label(text=settings.caption_error, icon='ERROR')
+        if settings.caption_running:
+            self.layout.operator('ml.cancel_caption', text='当前批次后停止打标', icon='CANCEL')
 
 
 class ML_PT_character(bpy.types.Panel):
@@ -180,9 +187,10 @@ class ML_PT_output(bpy.types.Panel):
     def draw(self, context):
         settings = context.scene.ml_settings
         col = controls(self.layout, settings)
-        col.prop(settings, 'trigger', text='角色触发词')
+        col.prop(settings, 'trigger', text='角色名')
         col.prop(settings, 'resolution', text='渲染长边 (px)')
         col.prop(settings, 'auto_crop', text='自动裁掉白边')
+        col.prop(settings, 'api_caption', text='渲染后 API 打标')
         row = col.row(align=True)
         row.prop(settings, 'output', text='输出到')
         row.operator('ml.open_output', text='', icon='FILE_FOLDER')
@@ -196,9 +204,15 @@ class ML_PT_output(bpy.types.Panel):
         actions = col.column(); actions.enabled = ready(context) and bool(settings.output.strip())
         actions.scale_y = 1.5
         actions.operator('ml.render_dataset', text='开始渲染 · 全部 16 张', icon='RENDER_STILL').test_only = False
-        tags = fold(col, settings, 'ui_tags', '附加训练标签')
+        tags = fold(col, settings, 'ui_tags', 'API 打标与标签')
         if tags is not None:
-            tags.prop(settings, 'tags', text='附加标签')
+            tags.label(text='@3d, 角色名, 图片详细描述')
+            captioning.draw_config(tags, context)
+            tags.separator()
+            tags.prop(settings, 'caption_folder', text='补打标目录')
+            tags.operator('ml.caption_images', text='打标已有图片 / 重试失败项', icon='FILE_REFRESH')
+            if not settings.api_caption:
+                tags.prop(settings, 'tags', text='基础附加标签')
         developer = fold(col, settings, 'ui_developer', '开发检查')
         if developer is not None:
             actions = developer.column(align=True); actions.enabled = ready(context)

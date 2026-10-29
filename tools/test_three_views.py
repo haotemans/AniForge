@@ -46,6 +46,7 @@ else:
     session.close('three_views')
 materials = {slot.material for obj in addon.model_meshes(settings) for slot in obj.material_slots if slot.material}
 report = {'status': 'complete', 'game': args.game, 'render_folder': str(session.folder),
+          'metadata_folder': str(session.metadata_folder), 'pose': 'apose', 'output_layout': 'FLAT',
           'version': addon.bl_info['version'], 'shots': 3, 'resolution': args.resolution,
           'materials': [{'name': mat.name, 'source': mat.get('mmd_lora_source'),
                          'role': mat.get('mmd_lora_role'), 'surface': mat.surface_render_method,

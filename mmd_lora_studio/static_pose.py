@@ -1,4 +1,4 @@
-"""Static T pose and natural face only. No selectable pose/expression presets."""
+"""Static A pose and natural face only. No selectable pose/expression presets."""
 import math
 
 import bpy
@@ -79,12 +79,12 @@ def neutralize_face(rig, meshes):
     return cleared
 
 
-def apply_tpose(settings):
-    """Reset prior gestures, then swing A-pose arms horizontally, preserving roll."""
+def apply_apose(settings):
+    """Reset gestures and align both arms 45 degrees down, preserving bone roll."""
     rig = settings.armature
     missing = [key for key in ('left_arm', 'right_arm', 'left_elbow', 'right_elbow') if find_bone(rig, key) is None]
     if missing:
-        raise ValueError('无法定位 T Pose 所需手臂骨骼：'+', '.join(missing))
+        raise ValueError('无法定位 A Pose 所需手臂骨骼：'+', '.join(missing))
     rig.data.pose_position = 'POSE'
     for bone in rig.pose.bones:
         for constraint in bone.constraints:
@@ -96,7 +96,7 @@ def apply_tpose(settings):
     to_rig = rig.matrix_world.to_3x3().inverted()
     changed = []
     for hand, sign in (('left', 1), ('right', -1)):
-        direction = (to_rig @ (side*sign)).normalized()
+        direction = (to_rig @ (side*sign + Vector((0, 0, -1)))).normalized()
         for part in ('arm', 'elbow', 'wrist'):
             bone = find_bone(rig, hand+'_'+part)
             if bone is None:

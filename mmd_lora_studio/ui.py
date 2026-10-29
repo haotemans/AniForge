@@ -83,7 +83,7 @@ class ML_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         settings = context.scene.ml_settings
-        self.layout.label(text='T Pose · 16 张标准视图', icon='RENDER_STILL')
+        self.layout.label(text='A Pose · 16 张标准视图', icon='RENDER_STILL')
         self.layout.label(text='自动相机 · 白底 · 主体裁剪', icon='VIEW_CAMERA')
         if settings.running:
             box = self.layout.box()
@@ -116,7 +116,7 @@ class ML_PT_character(bpy.types.Panel):
         col.prop(settings, 'style', text='游戏风格')
         actions = col.row(align=True); actions.enabled = ready(context); actions.scale_y = 1.2
         actions.operator('ml.materials', text='应用三渲二', icon='MATERIAL')
-        actions.operator('ml.tpose', text='T Pose', icon='ARMATURE_DATA')
+        actions.operator('ml.apose', text='A Pose', icon='ARMATURE_DATA')
         textures = fold(col, settings, 'ui_textures', '贴图修复')
         if textures is not None:
             textures.prop(settings, 'textures', text='贴图目录')
@@ -198,6 +198,7 @@ class ML_PT_output(bpy.types.Panel):
         summary = col.box()
         summary.label(text=f'渲染画布 {width} × {height} px', icon='IMAGE_DATA')
         summary.label(text='白底 · 裁剪后尺寸随主体变化' if settings.auto_crop else '白底 · PNG + 标签')
+        summary.label(text='单目录 · 图片与同名 TXT 一一对应')
         counts = summary.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
         for label in GROUP_LABELS.values():
             counts.label(text=label+' 4 张')

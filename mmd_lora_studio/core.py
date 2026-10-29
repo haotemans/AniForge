@@ -1,4 +1,5 @@
-"""One T pose, four framings, four views. No animation or expression library."""
+"""One A pose, four framings, four views. No animation or expression library."""
+import hashlib
 import json
 import re
 import unicodedata
@@ -52,7 +53,7 @@ def safe_name(value):
 
 def recipe():
     return [dict(group=group, index=index, title=GROUP_LABELS[group]+'·'+label,
-                 view=view, azimuth=angle, elevation=0, pose='tpose', expression='neutral')
+                 view=view, azimuth=angle, elevation=0, pose='apose', expression='neutral')
             for group in GROUPS for index, (view, label, angle) in enumerate(VIEWS, 1)]
 
 
@@ -65,7 +66,14 @@ def three_view_recipe(group='portrait'):
 
 def dataset_coverage(shots):
     return {'total': len(shots), 'per_group': {g: sum(s['group'] == g for s in shots) for g in GROUPS},
-            'pose': 'tpose', 'expression': 'neutral'}
+            'pose': 'apose', 'expression': 'neutral'}
+
+
+def dataset_metadata_dir(folder):
+    """Keep manifests, caches and temporary files beside the training folder."""
+    folder = Path(folder).resolve()
+    key = hashlib.sha256(str(folder).encode('utf-8')).hexdigest()[:12]
+    return folder.parent / '.aniforge' / (safe_name(folder.name) + '_' + key)
 
 
 def padded_crop(width, height, bounds, padding_percent=3):
@@ -93,8 +101,8 @@ def caption(trigger, group, view):
     framing = {'portrait': 'portrait, face focus', 'half_body': 'upper body',
                'full_body': 'full body', 'lower_body': 'lower body, legs, feet'}
     direction = {'front': 'front view', 'left': 'left side view', 'right': 'right side view', 'back': 'from behind', 'side': 'side view'}
-    # Cropped portraits do not show the arms and should not teach a visible T pose.
-    pose = 't-pose' if group in {'half_body', 'full_body'} else ''
+    # Cropped portraits do not show the arms and should not teach a visible A pose.
+    pose = 'a-pose, arms angled down' if group in {'half_body', 'full_body'} else ''
     return ', '.join(x for x in ('@3d', trigger.strip(), '1person', framing[group], direction[view], pose) if x)
 
 

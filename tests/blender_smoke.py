@@ -169,6 +169,22 @@ alpha = next(n for n in zzz_highlight.node_tree.nodes if n.type == 'MATH')
 assert alpha.operation == 'MULTIPLY'
 assert abs(alpha.inputs[1].default_value - settings.hair_highlight_strength) < .0001
 assert alpha.inputs[0].links[0].from_socket.name == 'Alpha'
+# The native half-transparent sock layer has an additive sphere highlight.
+# Replace its graph without losing opacity, the base pattern or source data.
+regression.name = '袜+'
+shader.inputs['Alpha'].default_value = .5
+zzz_stocking = addon.toon_material(regression, 'ZZZ', settings)
+assert zzz_stocking['mmd_lora_role'] == 'STOCKING'
+assert not zzz_stocking.get('mmd_lora_preserved_layer')
+assert zzz_stocking.surface_render_method == 'BLENDED'
+assert not any(n.type in {'SHADERTORGB', 'GROUP'} for n in zzz_stocking.node_tree.nodes)
+alpha = next(n for n in zzz_stocking.node_tree.nodes if n.type == 'MATH')
+assert alpha.inputs[1].default_value == .5
+assert alpha.inputs[0].links[0].from_socket.name == 'Alpha'
+assert next(n for n in zzz_stocking.node_tree.nodes if n.type == 'TEX_IMAGE').image == source_image
+assert shader.inputs['Alpha'].default_value == .5
+assert addon.toon_material(regression, 'HSR', settings).get('mmd_lora_preserved_layer')
+shader.inputs['Alpha'].default_value = 1
 regression.name = '眉睫'
 assert material_role(regression) == 'EYE'
 mingyin_lashes = addon.toon_material(regression, 'NEVERNESS', settings)
@@ -192,7 +208,7 @@ for style in addon.STYLES:
     assert any(n.type == 'BSDF_TRANSPARENT' for n in body.active_material.node_tree.nodes)
 
 assert len(bpy.data.meshes) == mesh_count
-addon.apply_tpose(settings)
+addon.apply_apose(settings)
 addon.neutralize_face(rig, addon.model_meshes(settings))
 assert blink.value == 0 and abs(structural.value-.3) < .0001
 addon.unregister()

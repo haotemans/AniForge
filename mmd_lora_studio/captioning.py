@@ -12,6 +12,7 @@ import numpy as np
 from bpy.props import StringProperty, IntProperty, EnumProperty
 
 from .caption_api import ApiConfig, CaptionError, BATCH_SIZE, IMAGE_SIZE, request_batch, format_caption, atomic_text
+from .core import dataset_metadata_dir
 
 _JOB = None
 
@@ -70,6 +71,7 @@ def thumbnail_png(path):
 
 
 def _json_write(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
     atomic_text(path, json.dumps(value, ensure_ascii=False, indent=2))
 
 
@@ -83,8 +85,14 @@ def _read_json(path):
         return {}
 
 
+def read_manifest(root):
+    path = dataset_metadata_dir(root)/'manifest.json'
+    # Old four-directory outputs can still be captioned without moving assets.
+    return _read_json(path if path.is_file() else root/'manifest.json')
+
+
 def image_paths(root):
-    manifest = _read_json(root/'manifest.json')
+    manifest = read_manifest(root)
     if manifest.get('shots'):
         paths = [(root/shot['image']).resolve() for shot in manifest['shots']]
     else:
@@ -103,8 +111,8 @@ class CaptionJob:
         if not self.character or self.character == 'my_character':
             raise CaptionError('请先填写实际角色名。')
         self.signature = config.fingerprint()
-        self.cache_path = root/'caption_cache.json'
-        self.cache = _read_json(self.cache_path)
+        self.cache_path = dataset_metadata_dir(root)/'caption_cache.json'
+        self.cache = _read_json(self.cache_path if self.cache_path.is_file() else root/'caption_cache.json')
         self.cache = {'schema_version': 1, 'images': self.cache.get('images', {})}
         if not isinstance(self.cache['images'], dict):
             self.cache['images'] = {}
@@ -154,10 +162,11 @@ class CaptionJob:
         self.update_manifest()
 
     def update_manifest(self):
-        path = self.root/'manifest.json'
-        manifest = _read_json(path)
+        path = dataset_metadata_dir(self.root)/'manifest.json'
+        manifest = read_manifest(self.root)
         if not manifest:
             return
+        manifest['dataset_folder'] = self.root.name
         for shot in manifest.get('shots', []):
             key = Path(shot['image']).as_posix()
             if key in self.records:

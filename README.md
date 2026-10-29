@@ -1,8 +1,8 @@
-# AniForge · T Pose 四视图渲染
+# AniForge · A Pose 四视图渲染
 
-Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前版本 **0.11.3**。
+Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前版本 **0.12.0**。
 
-每个角色只使用一个 T Pose，面部保持自然状态。正式输出固定为 **16 张**：
+每个角色只使用一个 A Pose，面部保持自然状态。正式输出固定为 **16 张**：
 
 | 范围 | 数量 | 视角 |
 | --- | --- | --- |
@@ -15,7 +15,7 @@ Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前�
 
 ## 安装与使用
 
-运行 `python tools/build_zip.py`，在 Blender 偏好设置中从磁盘安装 `dist/mmd_lora_studio-0.11.3.zip`。升级时关闭 Blender，用新包替换旧的 `mmd_lora_studio` 文件夹，避免残留旧模块；重新启动后生效。
+运行 `python tools/build_zip.py`，在 Blender 偏好设置中从磁盘安装 `dist/mmd_lora_studio-0.12.0.zip`。升级时关闭 Blender，用新包替换旧的 `mmd_lora_studio` 文件夹，避免残留旧模块；重新启动后生效。
 
 1. 使用 MMD Tools 导入 PMX/PMD，打开侧栏 **MMD LoRA**。
 2. 展开 **1 角色与材质**：选择角色骨架，或选中角色网格后点击吸管识别，选择后自动创建或复用一个相机并切换为白底，选择游戏风格并应用三渲二。贴图修复和材质微调默认收起。
@@ -23,6 +23,8 @@ Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前�
 4. 展开 **3 渲染与输出**：设置角色触发词、渲染长边和输出目录，确认画布尺寸，点击“开始渲染 · 全部16张”。目录旁的文件夹按钮可打开已有输出目录。API打标配置与开发检查默认收起。填写角色名并启用“渲染后API打标”后，可用自填接口生成每张图片的详细描述。
 
 标签格式为 `@3d, 角色名, 图片详细描述`，每张图对应一个同目录同名TXT。API模式每批最多8张，16张分成8＋8；图片仅在内存中按原比例缩小，最长边不超过1024，不拉伸、不补方图，也不放大小图，原4K图不变，按JSON图片ID解析描述。支持已有图片补打标、成功结果缓存、失败项重试，以及改角色名后只在本地更新前缀。Base URL、Key和视觉模型由用户填写，详见 [API打标说明](docs/caption_api.md)。
+
+每次渲染创建一个角色文件夹，16张PNG和16个同名TXT全部平铺存放，不再创建肖像、半身、全身、下半身四个子目录。文件名保留取景类型和序号，例如 `角色名_lower_body_03.png` 与 `角色名_lower_body_03.txt`。清单、API缓存和临时文件放在角色文件夹外的同级 `.aniforge/` 中，图片目录只包含图片和TXT。已有旧目录仍可补打标，无需移动原图。
 
 已移除手动“基础附加标签”输入及旧值。API默认生成按实际画面逐张核对的英文连贯描述：细节充分时约140–240词，稀疏画面可更短，不编造遮挡部分、身份、故事或图外信息；返回JSON的`caption`字段只含描述正文。固定前缀和角色名仍在本地添加。
 
@@ -32,11 +34,13 @@ Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前�
 
 输出固定为纯白 RGB PNG，默认按角色的透明轮廓裁掉多余白边，保留 3% 安全留白。白发、白衣、细发丝和半透明装饰都参与轮廓判断。裁剪只收缩画布，不拉伸角色、不重新补成方图，因此最终尺寸和宽高比随主体变化；“渲染长边”表示裁剪前的画布长边。在“高级镜头”可调整输出留白，也可关闭自动裁剪以保留原画幅。每张图的实际尺寸和裁剪框会写入清单。中间透明图片会在处理完成后清理。
 
-T Pose 会先清除旧骨骼偏移，再根据角色正面方向把双臂伸直至水平；A Pose 模型也会展开双臂。渲染期间临时停用骨骼约束和已有布料、软体、刚体模拟，结束、取消或失败时恢复用户状态。面部归零依据 MMD 面部分类和常用形态键名称，保留体型与服装开关。已有 Action/NLA 动画需先在角色副本中解除，插件不会删除用户动画。
+A Pose 会先清除旧骨骼偏移，再根据角色正面方向让双臂伸直、向下约45°；预览、姿势按钮和所有渲染共用这一姿势。渲染期间临时停用骨骼约束和已有布料、软体、刚体模拟，结束、取消或失败时恢复用户状态。面部归零依据 MMD 面部分类和常用形态键名称，保留体型与服装开关。已有 Action/NLA 动画需先在角色副本中解除，插件不会删除用户动画。
 
 异环明音使用柔和的头发与颈部皮肤明暗，避免通用二档阴影造成大块灰褐色分界；眉睫归入眼部材质保留原底色。升级后在角色上重新点击一次“应用三渲二”更新已有材质，原模型与贴图不改动。
 
 绝区零菲欧妮的前后头发和皮肤使用柔和法线补光，背光处保留底色，消除后脑的大块硬灰影；透明头发高光使用原色叠加，衣服仍保留二档明暗，减轻暗部以便观察背面结构。选择“绝区零”并开启“头发 / 脸部优化”，重新应用三渲二后生效。
+
+菲欧妮的丝袜层保留原贴图、纹样与材质透明度，改用柔和明暗和Alpha混合，去除会把白色袜面推至过曝的原MMD加法球形高光。更改只作用于生成的绝区零材质，不覆盖源图、源PMX或原材质。
 
 旧工程中的动作和表情配置在读取时清理；不再读取历史本地动作缓存。源 PMX、贴图、现有工程和历史输出不被修改。
 
@@ -48,7 +52,7 @@ T Pose 会先清除旧骨骼偏移，再根据角色正面方向把双臂伸直�
 python -m unittest discover -s tests
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_smoke.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_static_render.py
-& 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_tpose.py
+& 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_apose.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_output.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_modal.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_captioning.py
@@ -57,7 +61,7 @@ python -m unittest discover -s tests
 需要出图测试时，默认仅对指定模型渲染正面、侧面、背面各一张：
 
 ```powershell
-python tools/run_three_views.py --games WUWA --source test_output/three_views_040 --output test_output/tpose_three_views --group full_body
+python tools/run_three_views.py --games WUWA --source test_output/three_views_040 --output test_output/apose_three_views --group full_body
 ```
 
 不在普通测试中运行 16 张完整输出；全量输出须显式点击或使用 `ml.render_dataset(test_only=False)`。详细清单见 [docs/shot_plan.md](docs/shot_plan.md)。

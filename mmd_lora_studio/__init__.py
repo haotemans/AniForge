@@ -1,7 +1,7 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 11, 3),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 0),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
-    'description': 'MMD toon materials and 16 T-pose views',
+    'description': 'MMD toon materials and 16 A-pose views',
     'category': 'Render',
 }
 
@@ -16,9 +16,9 @@ from bpy.props import StringProperty, EnumProperty, PointerProperty, IntProperty
 from bpy_extras.io_utils import ImportHelper, ExportHelper
 from mathutils import Vector
 
-from .core import STYLES, GROUPS, GROUP_LABELS, BONES, recipe, three_view_recipe, dataset_coverage, caption, safe_name, write_json, validate_camera_library
+from .core import STYLES, GROUPS, GROUP_LABELS, BONES, recipe, three_view_recipe, dataset_coverage, caption, safe_name, write_json, validate_camera_library, dataset_metadata_dir
 from .material_profiles import material_role, alpha_image, face_light, hair_color
-from .static_pose import find_bone, shape_blocks, apply_tpose, neutralize_face, CharacterState, has_animation
+from .static_pose import find_bone, shape_blocks, apply_apose, neutralize_face, CharacterState, has_animation
 from .camera import configure_camera, capture_camera, camera_apply, resolution, ensure_camera, remember_camera, restore_camera, white_world, white_view
 from .output import save_white_crop, show_output
 from . import ui, captioning
@@ -73,6 +73,7 @@ def diffuse_image(mat):
 def toon_material(source, style, settings=None):
     _, threshold, shadow = STYLES[style]
     role = material_role(source) if settings and settings.material_profiles else 'GENERIC'
+    stocking = style == 'ZZZ' and role == 'STOCKING'
     if source:
         source.use_fake_user = True
     shader = source.node_tree.nodes.get('mmd_shader') if source and source.node_tree else None
@@ -80,7 +81,7 @@ def toon_material(source, style, settings=None):
     opacity = float(alpha_socket.default_value) if alpha_socket else (source.diffuse_color[3] if source else 1)
     # Authored semitransparent shadow/highlight layers can rely on MMD's
     # backface and blend logic. Preserve that graph rather than flatten it.
-    if shader and opacity < .999 and role != 'HAIR_HIGHLIGHT':
+    if shader and opacity < .999 and role != 'HAIR_HIGHLIGHT' and not stocking:
         mat = source.copy()
         mat.name = source.name + '_LoRA_' + style
         mat['mmd_lora_material'] = True
@@ -118,13 +119,16 @@ def toon_material(source, style, settings=None):
     tree.links.new(ramp.outputs[0], multiply.inputs[2])
     soft_hair = style in {'NEVERNESS', 'ZZZ'} and role == 'HAIR'
     soft_skin = style in {'NEVERNESS', 'ZZZ'} and role == 'SKIN'
-    if role == 'FACE' or soft_hair or soft_skin:
+    if role == 'FACE' or soft_hair or soft_skin or stocking:
         # Bright hair and skin expose the generic binary threshold as broad
         # grey bands, especially on Feioni's back. Bounded normal lighting
         # retains the painted strands and stays readable under viewport HDRIs
         # and rear-view renders without baking changes into the source image.
-        tree.links.new(face_light(tree, settings, minimum=.82 if soft_hair else None,
-                                  role='Hair' if soft_hair else 'Skin' if soft_skin else 'Face'), multiply.inputs[2])
+        # ZZZ's stockings keep their authored alpha and pattern, but no additive
+        # MMD sphere highlight: it clips white fabric and erases its weave.
+        minimum = .78 if stocking else .82 if soft_hair else None
+        tree.links.new(face_light(tree, settings, minimum=minimum,
+                                  role='Stocking' if stocking else 'Hair' if soft_hair else 'Skin' if soft_skin else 'Face'), multiply.inputs[2])
         mat['mmd_lora_soft_light'] = True
         tree.nodes.remove(rgb)
         tree.nodes.remove(diffuse)
@@ -163,7 +167,7 @@ def toon_material(source, style, settings=None):
     if hasattr(mat, 'surface_render_method'):
         # Locking every game's eye shells to BLENDED can reorder the iris and
         # sclera (notably ZZZ). The sampled WW eye stack needs this path.
-        blended = (role == 'EYE' and style == 'WUWA') or (role == 'HAIR_HIGHLIGHT' and style == 'ZZZ')
+        blended = (role == 'EYE' and style == 'WUWA') or (role == 'HAIR_HIGHLIGHT' and style == 'ZZZ') or stocking
         mat.surface_render_method = 'BLENDED' if blended else 'DITHERED'
     return mat
 
@@ -400,8 +404,8 @@ def selected_shot(settings):
 
 def update_preview_camera(context, settings, meshes, shot):
     if has_animation(settings.armature, meshes):
-        raise ValueError('请先在角色副本中解除动画，避免动画覆盖 T Pose。')
-    apply_tpose(settings)
+        raise ValueError('请先在角色副本中解除动画，避免动画覆盖 A Pose。')
+    apply_apose(settings)
     neutralize_face(settings.armature, meshes)
     context.view_layer.update()
     camera = ensure_camera(context.scene)
@@ -418,16 +422,16 @@ def update_preview_camera(context, settings, meshes, shot):
     return camera
 
 
-class ML_OT_tpose(bpy.types.Operator):
-    bl_idname = 'ml.tpose'; bl_label = '应用唯一 T Pose / 清除面部表情'; bl_options = {'REGISTER', 'UNDO'}
+class ML_OT_apose(bpy.types.Operator):
+    bl_idname = 'ml.apose'; bl_label = '应用唯一 A Pose / 清除面部表情'; bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         try:
             settings = context.scene.ml_settings
             meshes = model_meshes(settings)
             if has_animation(settings.armature, meshes):
-                raise ValueError('请先在角色副本中解除动画，避免动画覆盖 T Pose。')
-            apply_tpose(settings)
+                raise ValueError('请先在角色副本中解除动画，避免动画覆盖 A Pose。')
+            apply_apose(settings)
             neutralize_face(settings.armature, meshes)
             return {'FINISHED'}
         except Exception as exc:
@@ -538,8 +542,8 @@ class RenderSession:
         if self.settings.running:
             raise ValueError('已有渲染任务正在进行。')
         if has_animation(self.settings.armature, self.meshes):
-            raise ValueError('请先在角色副本中解除动画，避免动画覆盖 T Pose。')
-        self.created = []; self.manifest = None; self.folder = None
+            raise ValueError('请先在角色副本中解除动画，避免动画覆盖 A Pose。')
+        self.created = []; self.manifest = None; self.folder = None; self.metadata_folder = None
         self.closed = False
         self.character_state = CharacterState(self.settings.armature, self.meshes)
         r = self.scene.render
@@ -568,6 +572,8 @@ class RenderSession:
         root = Path(bpy.path.abspath(self.settings.output)).resolve()
         self.folder = root / (safe_name(self.settings.trigger) + '_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
         self.folder.mkdir(parents=True, exist_ok=False)
+        self.metadata_folder = dataset_metadata_dir(self.folder)
+        self.metadata_folder.mkdir(parents=True, exist_ok=False)
         self.settings.last_render_folder = str(self.folder)
         self.settings.caption_status = '等待渲染完成后 API 打标' if self.settings.api_caption else ''
         self.manifest = {'status': 'running', 'style': self.settings.style, 'blender': bpy.app.version_string,
@@ -576,7 +582,8 @@ class RenderSession:
                          'shots': [], 'recipe': self.plan, 'planned_coverage': dataset_coverage(self.plan),
                          'deformation_mode': 'ARMATURE_STATIC',
                          'camera_settings': capture_camera(self.settings),
-                         'pose': 'tpose', 'expression': 'neutral'}
+                         'pose': 'apose', 'expression': 'neutral', 'output_layout': 'FLAT',
+                         'dataset_folder': self.folder.name}
         self.manifest['output_processing'] = {'background': 'white', 'auto_crop': self.settings.auto_crop,
                                               'padding_percent': self.settings.crop_padding}
         self.flush()
@@ -585,7 +592,7 @@ class RenderSession:
             self.rigidbody_world.enabled = False
         for modifier, _, _ in self.simulation_modifiers:
             modifier.show_viewport = modifier.show_render = False
-        apply_tpose(self.settings)
+        apply_apose(self.settings)
         neutralize_face(self.settings.armature, self.meshes)
         for obj, _ in self.visibility:
             obj.hide_render = True
@@ -613,27 +620,26 @@ class RenderSession:
         white_view(self.scene)
 
     def flush(self):
-        write_json(self.folder / 'manifest.json', self.manifest)
+        write_json(self.metadata_folder / 'manifest.json', self.manifest)
 
     def reset_character(self, static=True):
         self.character_state.restore()
 
     def prepare_shot(self, context, shot):
         # Ignore any removed pose/expression fields supplied by old scripts.
-        apply_tpose(self.settings)
+        apply_apose(self.settings)
         cleared = neutralize_face(self.settings.armature, self.meshes)
         context.view_layer.update()
         self.camera_meta = configure_camera(context, self.settings, self.meshes, self.camera, shot)
-        folder = self.folder / shot['group']; folder.mkdir(exist_ok=True)
         name = f'{safe_name(self.settings.trigger)}_{shot["group"]}_{shot["index"]:02d}'
-        image = folder / (name + '.png'); self.scene.render.filepath = str(image)
+        image = self.folder / (name + '.png'); self.scene.render.filepath = str(image)
         return image, cleared, [b.name for b in self.settings.armature.pose.bones]
 
     def render(self, context, shot):
         image, expression_keys, pose_bones = self.prepare_shot(context, shot)
         group = shot['group']
         r = self.scene.render
-        with TemporaryDirectory(prefix='.aniforge_', dir=self.folder) as temporary:
+        with TemporaryDirectory(prefix='render_', dir=self.metadata_folder) as temporary:
             raw = Path(temporary) / 'character_rgba.png'
             r.filepath = str(raw)
             r.image_settings.color_mode = 'RGBA'; r.image_settings.color_depth = '16'; r.film_transparent = True
@@ -649,7 +655,7 @@ class RenderSession:
         tags = '' if self.settings.api_caption else caption(self.settings.trigger, group, shot.get('view', 'front'))
         if not self.settings.api_caption:
             image.with_suffix('.txt').write_text(tags + '\n', encoding='utf-8')
-        self.manifest['shots'].append(dict(shot, pose='tpose', expression='neutral', image=str(image.relative_to(self.folder)), caption=tags,
+        self.manifest['shots'].append(dict(shot, pose='apose', expression='neutral', image=image.name, caption=tags,
                                            caption_status='API_PENDING' if self.settings.api_caption else 'BASIC',
                                            cleared_face_keys=expression_keys, camera=self.camera_meta, output=self.output_meta, deformation_mode='ARMATURE_STATIC'))
         self.flush()
@@ -695,7 +701,7 @@ class RenderSession:
 
 
 class ML_OT_render(bpy.types.Operator):
-    bl_idname = 'ml.render_dataset'; bl_label = '渲染 T Pose 视图'
+    bl_idname = 'ml.render_dataset'; bl_label = '渲染 A Pose 视图'
     test_only: BoolProperty(name='仅三视图测试', default=True)
     _timer = None
     _session = None
@@ -830,7 +836,7 @@ class ML_OT_preview(bpy.types.Operator):
 
 CLASSES = (MLSettings, ML_OT_materials, ML_OT_textures, ML_OT_assign_textures,
            ML_OT_camera_preset, ML_OT_import_cameras, ML_OT_export_cameras,
-           ML_OT_tpose, ML_OT_frame_camera, ML_OT_shot_plan, ML_OT_render, ML_OT_preview, *captioning.CLASSES, *ui.CLASSES)
+           ML_OT_apose, ML_OT_frame_camera, ML_OT_shot_plan, ML_OT_render, ML_OT_preview, *captioning.CLASSES, *ui.CLASSES)
 
 # Removed RNA/ID properties must not reactivate old workflows in saved projects.
 REMOVED_SETTINGS = ('presets_json', 'pose', 'expression', 'pose_strength', 'expression_strength', 'head_angles',

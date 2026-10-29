@@ -156,7 +156,7 @@ def configure_camera(context, settings, meshes, camera, shot):
         points = box_points(target-half, target+half)
     elif group == 'lower_body':
         # Fit actual evaluated clothing/leg geometry from waist/hips to the sole.
-        # Full-mesh bounds would include the T-pose arms and defeat this crop.
+        # Full-mesh bounds would include the arms and defeat this crop.
         waist_z = (hips.z + body_height*.09) if hips is not None else lo.z+height*.58
         waist_z = min(hi.z, max(lo.z+height*.3, waist_z))
         crop = []

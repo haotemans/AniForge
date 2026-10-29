@@ -61,15 +61,24 @@ with tempfile.TemporaryDirectory() as folder:
          patch('subprocess.Popen', side_effect=AssertionError('Physics worker started')):
         session = addon.RenderSession(bpy.context, fixture_plan); session.setup(bpy.context)
         assert session.manifest['deformation_mode'] == 'ARMATURE_STATIC'
+        assert session.manifest['pose'] == 'apose' and session.manifest['output_layout'] == 'FLAT'
+        assert not session.metadata_folder.is_relative_to(session.folder)
+        image_names = set()
         assert scene.view_settings.exposure == 0 and scene.view_settings.gamma == 1
         assert not scene.view_settings.use_curve_mapping and not scene.render.film_transparent
         assert not world.enabled and track.mute
         assert all(not m.show_viewport and not m.show_render for m, _, _ in modifier_flags)
         for shot in fixture_plan:
-            session.prepare_shot(bpy.context, shot)
+            image, _, _ = session.prepare_shot(bpy.context, shot)
+            assert image.parent == session.folder
+            assert image.name not in image_names
+            image_names.add(image.name)
             assert not world.enabled and track.mute
             assert scene.frame_current == frame
         session.close('checked_without_rendering')
+        assert len(image_names) == 16
+        assert not list(session.folder.iterdir()), 'Training folder contains metadata or subfolders'
+        assert (session.metadata_folder/'manifest.json').is_file()
         assert world.enabled and not track.mute
         assert all((m.show_viewport, m.show_render) == (v, r) for m, v, r in modifier_flags)
         assert len(bpy.data.objects) == object_count

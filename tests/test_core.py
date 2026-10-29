@@ -19,8 +19,8 @@ class RecipeTests(unittest.TestCase):
             self.assertEqual([s['azimuth'] for s in group_shots], [0, 90, -90, 180])
             self.assertEqual([s['view'] for s in group_shots], ['front', 'left', 'right', 'back'])
 
-    def test_only_tpose_and_neutral_face(self):
-        self.assertEqual({s['pose'] for s in core.recipe()}, {'tpose'})
+    def test_only_apose_and_neutral_face(self):
+        self.assertEqual({s['pose'] for s in core.recipe()}, {'apose'})
         self.assertEqual({s['expression'] for s in core.recipe()}, {'neutral'})
         self.assertTrue(all('pose_provider' not in s and 'performance' not in s for s in core.recipe()))
 
@@ -32,13 +32,13 @@ class RecipeTests(unittest.TestCase):
 
     def test_recipe_has_no_shared_mutation(self):
         plan = core.recipe(); plan[0]['pose'] = 'old'
-        self.assertEqual(core.recipe()[0]['pose'], 'tpose')
+        self.assertEqual(core.recipe()[0]['pose'], 'apose')
 
     def test_captions_describe_the_visible_crop(self):
         self.assertIn('lower body, legs, feet', core.caption('character', 'lower_body', 'back'))
         self.assertIn('from behind', core.caption('character', 'portrait', 'back'))
-        self.assertNotIn('t-pose', core.caption('character', 'portrait', 'front'))
-        self.assertIn('t-pose', core.caption('character', 'full_body', 'left'))
+        self.assertNotIn('a-pose', core.caption('character', 'portrait', 'front'))
+        self.assertIn('a-pose', core.caption('character', 'full_body', 'left'))
 
     def test_coverage(self):
         self.assertEqual(core.dataset_coverage(core.recipe())['per_group'], dict.fromkeys(core.GROUPS, 4))
@@ -69,6 +69,15 @@ class RecipeTests(unittest.TestCase):
             core.write_json(path, {'status': 'complete'})
             self.assertIn('complete', path.read_text())
             self.assertFalse(path.with_suffix('.json.tmp').exists())
+
+    def test_training_metadata_stays_outside_image_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            dataset = Path(folder)/'my_character'
+            metadata = core.dataset_metadata_dir(dataset)
+            self.assertFalse(metadata.is_relative_to(dataset))
+            self.assertEqual(metadata.parent, Path(folder)/'.aniforge')
+            self.assertEqual(metadata, core.dataset_metadata_dir(dataset))
+            self.assertNotEqual(metadata, core.dataset_metadata_dir(Path(folder)/'another'/'my_character'))
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-"""T-pose adaptation, sixteen camera fits, migration and dispatch; zero renders."""
+"""A-pose adaptation, sixteen camera fits, migration and dispatch; zero renders."""
 import sys
 import json
 import tempfile
@@ -44,26 +44,26 @@ rig.pose.bones['左腕'].rotation_mode = 'XYZ'; rig.pose.bones['左腕'].rotatio
 meshes = addon.model_meshes(settings)
 baseline = CharacterState(rig, meshes)
 
-def assert_tpose():
+def assert_apose():
     for side, sign in [('left', 1), ('right', -1)]:
         for part in ('arm', 'elbow', 'wrist'):
             bone = addon.find_bone(rig, side+'_'+part)
             direction = (rig.matrix_world.to_3x3() @ (bone.tail-bone.head)).normalized()
-            expected = Vector((sign, 0, 0)) if settings.front == 0 else Vector((0, sign, 0))
+            expected = (Vector((sign, 0, -1)) if settings.front == 0 else Vector((0, sign, -1))).normalized()
             assert direction.dot(expected) > .9999, (bone.name, list(direction), list(expected))
 
-addon.apply_tpose(settings); addon.neutralize_face(rig, meshes); bpy.context.view_layer.update()
-assert_tpose()
+addon.apply_apose(settings); addon.neutralize_face(rig, meshes); bpy.context.view_layer.update()
+assert_apose()
 assert face.value == 0 and driver.mute
 assert abs(shape.value-.3) < .0001 and abs(clothes.value-.4) < .0001
 snapshot = [b.matrix_basis.copy() for b in rig.pose.bones]
-addon.apply_tpose(settings)
+addon.apply_apose(settings)
 assert all((b.matrix_basis.translation-m.translation).length < 1e-6 and
            b.matrix_basis.to_quaternion().rotation_difference(m.to_quaternion()).angle < 1e-4
            for b, m in zip(rig.pose.bones, snapshot))
 # The same solver also follows a rotated/scaled object and rotated character front.
 rig.rotation_euler.z = .7; rig.scale = (1.2, 1.2, 1.2); settings.front = 90
-bpy.context.view_layer.update(); addon.apply_tpose(settings); assert_tpose()
+bpy.context.view_layer.update(); addon.apply_apose(settings); assert_apose()
 rig.rotation_euler.z = 0; rig.scale = (1, 1, 1); settings.front = 0
 baseline.restore()
 assert not driver.mute and not constraint.mute and abs(face.value-.8) < .0001
@@ -122,7 +122,7 @@ with tempfile.TemporaryDirectory() as folder:
             assert session.camera == automatic_camera
             for shot in addon.recipe():
                 session.prepare_shot(bpy.context, shot)
-                assert_tpose()
+                assert_apose()
                 assert all(c.mute for b in rig.pose.bones for c in b.constraints)
                 assert face.value == 0 and driver.mute
                 for point in session.camera_meta['roi']:
@@ -173,9 +173,9 @@ rig.pose.bones['左腕'].name = '腕.L'
 rig.pose.bones['左ひじ'].name = 'ひじ.L'
 rig.pose.bones['右腕'].name = '腕.R'
 rig.pose.bones['右ひじ'].name = 'ひじ.R'
-addon.apply_tpose(settings); assert_tpose()
+addon.apply_apose(settings); assert_apose()
 addon.unregister()
 from _bpy_restrict_state import RestrictBlend
 with RestrictBlend():
     addon.register(); addon.unregister()
-print('TPOSE_OK: A-pose/roll/transform adaptation, neutral face, migration, 32 camera fits, 16/3/1 dispatch; zero renders')
+print('APOSE_OK: A-pose/roll/transform adaptation, neutral face, migration, 32 camera fits, 16/3/1 dispatch; zero renders')

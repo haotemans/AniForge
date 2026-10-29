@@ -19,6 +19,7 @@ import numpy as np
 import mmd_lora_studio as addon
 from mmd_lora_studio import captioning
 from mmd_lora_studio.caption_api import ApiConfig
+from mmd_lora_studio.core import dataset_metadata_dir
 
 addon.register()
 settings = bpy.context.scene.ml_settings
@@ -78,7 +79,8 @@ def fixture(root, source, count):
     for i in range(1, count+1):
         image = root/f'frame_{i:02}.png'; shutil.copyfile(source, image)
         shots.append({'image': image.name, 'caption_status': 'API_PENDING'})
-    (root/'manifest.json').write_text(json.dumps({'shots': shots}), encoding='utf-8')
+    metadata = dataset_metadata_dir(root); metadata.mkdir(parents=True, exist_ok=True)
+    (metadata/'manifest.json').write_text(json.dumps({'shots': shots}), encoding='utf-8')
 
 
 def drain():
@@ -115,13 +117,14 @@ try:
         hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in dataset.glob('*.png')}
         job = captioning.start(bpy.context, dataset, config=config, blocking=True)
         assert requests == [8, 8] and job.done == 16 and job.failed == 0
-        assert json.loads((dataset/'manifest.json').read_text())['dataset_status'] == 'READY'
+        assert json.loads((dataset_metadata_dir(dataset)/'manifest.json').read_text())['dataset_status'] == 'READY'
+        assert all(p.is_file() and p.suffix in {'.png', '.txt'} for p in dataset.iterdir())
         assert len(list(dataset.glob('*.txt'))) == 16
         for i in range(1, 17):
             text = (dataset/f'frame_{i:02}.txt').read_text(encoding='utf-8')
             assert text.startswith('@3d, LOCAL_CHARACTER_A, ')
             assert f'image_{i:03}' in text
-        assert 'unit-test-key' not in (dataset/'caption_cache.json').read_text()
+        assert 'unit-test-key' not in (dataset_metadata_dir(dataset)/'caption_cache.json').read_text()
         assert len(bpy.data.images) == image_count
 
         # Renaming the local trigger rewrites prefixes without any API calls.
@@ -130,7 +133,7 @@ try:
         assert requests == [8, 8]
         assert all(p.read_text().startswith('@3d, LOCAL_CHARACTER_B, ') for p in dataset.glob('*.txt'))
 
-        cache_path = dataset/'caption_cache.json'; cache = json.loads(cache_path.read_text())
+        cache_path = dataset_metadata_dir(dataset)/'caption_cache.json'; cache = json.loads(cache_path.read_text())
         for i in range(1, 9):
             del cache['images'][f'frame_{i:02}.png']
             (dataset/f'frame_{i:02}.txt').unlink()
@@ -138,13 +141,28 @@ try:
         invalid[0] = True
         job = captioning.start(bpy.context, dataset, config=config, blocking=True)
         assert job.done == 8 and job.failed == 8
-        assert json.loads((dataset/'manifest.json').read_text())['dataset_status'] == 'CAPTION_FAILED'
+        assert json.loads((dataset_metadata_dir(dataset)/'manifest.json').read_text())['dataset_status'] == 'CAPTION_FAILED'
         assert len(list(dataset.glob('*.txt'))) == 8
         invalid[0] = False
         job = captioning.start(bpy.context, dataset, config=config, blocking=True)
         assert requests == [8, 8, 8, 8] and job.done == 16
         assert hashes == {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in dataset.glob('*.png')}
         assert not list(dataset.glob('*.tmp'))
+
+        # Read a historical grouped output and its in-folder cache, keeping
+        # the original images in place and writing new status outside it.
+        legacy = root/'legacy'; grouped = legacy/'portrait'; grouped.mkdir(parents=True)
+        old_image = grouped/'old.png'; shutil.copyfile(source, old_image)
+        (legacy/'manifest.json').write_text(json.dumps({'shots': [{'image': 'portrait/old.png'}]}), encoding='utf-8')
+        (legacy/'caption_cache.json').write_text(json.dumps({'images': {'portrait/old.png': {
+            'sha256': hashlib.sha256(old_image.read_bytes()).hexdigest(), 'signature': config.fingerprint(),
+            'description': 'A visible red and blue image.'}}}), encoding='utf-8')
+        old_requests = len(requests)
+        job = captioning.start(bpy.context, legacy, config=config, blocking=True)
+        assert job.done == 1 and len(requests) == old_requests
+        assert old_image.with_suffix('.txt').read_text().startswith('@3d, LOCAL_CHARACTER_B, ')
+        assert json.loads((dataset_metadata_dir(legacy)/'manifest.json').read_text())['dataset_status'] == 'READY'
+        assert hashlib.sha256(old_image.read_bytes()).hexdigest() == hashlib.sha256(source.read_bytes()).hexdigest()
 
         asynchronous = root/'async'; fixture(asynchronous, source, 2)
         captioning.start(bpy.context, asynchronous, config=config, blocking=False)

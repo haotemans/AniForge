@@ -50,7 +50,7 @@ for game in args.games:
                     bone = addon.find_bone(settings.armature, side+'_'+part)
                     assert bone is not None, (game, side, part, [b.name for b in settings.armature.pose.bones][:90])
                     direction = (settings.armature.matrix_world.to_3x3() @ (bone.tail-bone.head)).normalized()
-                    assert direction.dot(Vector((sign, 0, 0))) > .999, (game, bone.name, list(direction))
+                    assert direction.dot(Vector((sign, 0, -1)).normalized()) > .999, (game, bone.name, list(direction))
                     arms[bone.name] = list(direction)
             report['models'][game] = {'source': str(source), 'fits': fits, 'arm_directions': arms, 'status': 'PASS'}
         finally:
@@ -58,8 +58,8 @@ for game in args.games:
         assert not list(Path(folder).rglob('*.png'))
     assert all(max(abs(b.matrix_basis[i][j]-m[i][j]) for i in range(4) for j in range(4)) < 1e-5 for b, m in before)
     assert all(b.matrix_local == m for b, m in rest)
-    print('TPOSE_MODEL_OK', game, '16 camera fits; source unchanged; zero renders', flush=True)
+    print('APOSE_MODEL_OK', game, '16 camera fits; source unchanged; zero renders', flush=True)
 args.output.parent.mkdir(parents=True, exist_ok=True)
 args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
 addon.unregister()
-print('TPOSE_MODELS_OK', len(report['models']), flush=True)
+print('APOSE_MODELS_OK', len(report['models']), flush=True)

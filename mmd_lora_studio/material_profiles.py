@@ -5,7 +5,7 @@ import re
 import bpy
 from mathutils import Vector
 
-ROLES = {'GENERIC', 'FACE', 'SKIN', 'FACE_SHADOW', 'HAIR', 'HAIR_HIGHLIGHT', 'EYE', 'DECAL'}
+ROLES = {'GENERIC', 'FACE', 'SKIN', 'FACE_SHADOW', 'HAIR', 'HAIR_HIGHLIGHT', 'EYE', 'DECAL', 'STOCKING'}
 
 
 def material_role(source):
@@ -21,6 +21,8 @@ def material_role(source):
         return 'FACE'
     if re.fullmatch(r'(?:肌|体肌|skin|skin_body|body_skin)\d*', name):
         return 'SKIN'
+    if name in {'袜', '袜+', '襪', '襪+', '丝袜', '絲襪', 'stocking', 'stockings', 'pantyhose', 'tights'}:
+        return 'STOCKING'
     if name in {'目', '白目', '白2', '目白', '目hl', '目光', '目光2', '目+hi', '目++hi',
                 '睫毛', '睫', '眉', '睫眉', '眉睫', 'eyes', 'iris'}:
         return 'EYE'

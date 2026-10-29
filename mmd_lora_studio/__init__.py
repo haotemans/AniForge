@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 11, 1),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 11, 2),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 T-pose views',
     'category': 'Render',
@@ -231,7 +231,6 @@ class MLSettings(bpy.types.PropertyGroup):
     output: StringProperty(name='输出目录', subtype='DIR_PATH', default='//lora_dataset')
     textures: StringProperty(name='贴图目录', subtype='DIR_PATH')
     trigger: StringProperty(name='角色触发词', default='my_character')
-    tags: StringProperty(name='附加标签', default='anime style, simple background')
     api_caption: BoolProperty(name='API 自动打标', default=False, update=caption_mode_changed)
     caption_running: BoolProperty(default=False, options={'SKIP_SAVE'})
     caption_status: StringProperty(default='', options={'SKIP_SAVE'})
@@ -275,7 +274,7 @@ class MLSettings(bpy.types.PropertyGroup):
     ui_material: BoolProperty(name='材质微调', default=False)
     ui_camera: BoolProperty(name='高级镜头', default=False)
     ui_presets: BoolProperty(name='镜头预设', default=False)
-    ui_tags: BoolProperty(name='附加训练标签', default=False)
+    ui_tags: BoolProperty(name='API 图片打标', default=False)
     ui_developer: BoolProperty(name='开发检查', default=False)
 
 
@@ -644,7 +643,7 @@ class RenderSession:
                 r.image_settings.color_mode = 'RGB'; r.image_settings.color_depth = '8'; r.film_transparent = False
         if not image.is_file():
             raise RuntimeError('渲染未生成目标 PNG。')
-        tags = '' if self.settings.api_caption else caption(self.settings.trigger, group, shot.get('view', 'front'), self.settings.tags)
+        tags = '' if self.settings.api_caption else caption(self.settings.trigger, group, shot.get('view', 'front'))
         if not self.settings.api_caption:
             image.with_suffix('.txt').write_text(tags + '\n', encoding='utf-8')
         self.manifest['shots'].append(dict(shot, pose='tpose', expression='neutral', image=str(image.relative_to(self.folder)), caption=tags,
@@ -836,7 +835,7 @@ REMOVED_SETTINGS = ('presets_json', 'pose', 'expression', 'pose_strength', 'expr
                     'capture_all_keys', 'dataset_variation', 'pose_folder', 'pose_import_scale',
                     'pose_folder_report', 'slot_left_hand', 'slot_right_hand', 'slot_seat', 'developer_tools',
                     'mapping_report', 'physics_mode', 'physics_frames', 'animchar_reference', 'animchar_prompt',
-                    'animchar_rebuild', 'animchar_review_note', 'animchar_status', 'ui_section')
+                    'animchar_rebuild', 'animchar_review_note', 'animchar_status', 'ui_section', 'tags')
 
 
 @bpy.app.handlers.persistent

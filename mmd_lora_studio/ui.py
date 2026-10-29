@@ -204,15 +204,13 @@ class ML_PT_output(bpy.types.Panel):
         actions = col.column(); actions.enabled = ready(context) and bool(settings.output.strip())
         actions.scale_y = 1.5
         actions.operator('ml.render_dataset', text='开始渲染 · 全部 16 张', icon='RENDER_STILL').test_only = False
-        tags = fold(col, settings, 'ui_tags', 'API 打标与标签')
+        tags = fold(col, settings, 'ui_tags', 'API 图片打标')
         if tags is not None:
             tags.label(text='@3d, 角色名, 图片详细描述')
             captioning.draw_config(tags, context)
             tags.separator()
             tags.prop(settings, 'caption_folder', text='补打标目录')
             tags.operator('ml.caption_images', text='打标已有图片 / 重试失败项', icon='FILE_REFRESH')
-            if not settings.api_caption:
-                tags.prop(settings, 'tags', text='基础附加标签')
         developer = fold(col, settings, 'ui_developer', '开发检查')
         if developer is not None:
             actions = developer.column(align=True); actions.enabled = ready(context)

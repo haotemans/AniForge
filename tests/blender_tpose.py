@@ -80,11 +80,13 @@ baseline.restore()
 # Removed settings must never recreate a saved gesture or trigger native calls.
 settings['presets_json'] = '{"poses":{"old":{}},"expressions":{"old":{}},"cameras":{"old lens":{"camera_lens":75}}}'
 settings['animchar_reference'] = 'old.png'; settings['dataset_variation'] = 1
+settings['tags'] = 'old manual description must be removed'
 settings['ui_section'] = 1; settings['plan_index'] = 12
 settings['preview_group'] = 3
 addon.migrate_settings()
 assert not hasattr(settings, 'ui_section') and settings.plan_index == 4 and settings.preview_group == 'lower_body'
 assert all(name not in settings for name in addon.REMOVED_SETTINGS)
+assert not hasattr(settings, 'tags')
 assert addon.camera_library(settings)['cameras']['old lens']['camera_lens'] == 75
 assert 'pose' not in settings.bl_rna.properties and 'expression' not in settings.bl_rna.properties
 assert not any(name.startswith('mmd_lora_studio.animchar') for name in sys.modules)

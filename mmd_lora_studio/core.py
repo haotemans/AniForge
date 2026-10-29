@@ -88,13 +88,13 @@ class ShotSettings:
         return self._overrides[name] if name in self._overrides else getattr(self._settings, name)
 
 
-def caption(trigger, group, view, extra=''):
+def caption(trigger, group, view):
     framing = {'portrait': 'portrait, face focus', 'half_body': 'upper body',
                'full_body': 'full body', 'lower_body': 'lower body, legs, feet'}
     direction = {'front': 'front view', 'left': 'left side view', 'right': 'right side view', 'back': 'from behind', 'side': 'side view'}
     # Cropped portraits do not show the arms and should not teach a visible T pose.
     pose = 't-pose' if group in {'half_body', 'full_body'} else ''
-    return ', '.join(x for x in ('@3d', trigger.strip(), '1person', framing[group], direction[view], pose, extra.strip()) if x)
+    return ', '.join(x for x in ('@3d', trigger.strip(), '1person', framing[group], direction[view], pose) if x)
 
 
 def validate_camera_library(value):

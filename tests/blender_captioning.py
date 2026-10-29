@@ -60,7 +60,7 @@ class Handler(BaseHTTPRequestHandler):
         for image in images:
             check_png(base64.b64decode(image.split(',', 1)[1]))
         requests.append(len(images))
-        rows = [{'id': key, 'description': 'Detailed visible red and blue clothing for '+key+'.'} for key in reversed(ids)]
+        rows = [{'id': key, 'caption': 'Detailed visible red and blue clothing for '+key+'.'} for key in reversed(ids)]
         if invalid[0]: rows = rows[:-1]
         response = json.dumps({'choices': [{'message': {'content': json.dumps({'images': rows})}}]}).encode()
         self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(response)

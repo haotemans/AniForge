@@ -28,6 +28,18 @@ class CaptionApiTests(unittest.TestCase):
         value = {'choices': [{'message': {'content': '```json\n{"images":[{"id":"b","description":"blue coat"},{"id":"a","description":"red coat"}]}\n```'}}]}
         self.assertEqual(api.parse_response(value, ['a', 'b']), {'a': 'red coat', 'b': 'blue coat'})
 
+    def test_grounded_prompt_uses_caption_field_and_new_cache_version(self):
+        payload = api.make_payload(api.ApiConfig('https://example.com/v1', 'vision'), [{'id': 'a', 'png': b'png'}])
+        prompt = payload['messages'][0]['content']
+        self.assertIn('140-240 English words', prompt)
+        self.assertIn('Never mix details between images', prompt)
+        self.assertIn('exact age', prompt)
+        self.assertIn('occluded body', prompt)
+        self.assertIn('"caption":', prompt)
+        self.assertNotIn('"description":', prompt)
+        self.assertGreaterEqual(api.PROMPT_VERSION, 2)
+        self.assertEqual(api.parse_response({'images': [{'id': 'a', 'caption': 'A detailed visible outfit.'}]}, ['a']), {'a': 'A detailed visible outfit.'})
+
     def test_invalid_and_partial_batches_are_rejected(self):
         for rows in ([{'id': 'a', 'description': 'one'}],
                      [{'id': 'a', 'description': 'one'}, {'id': 'a', 'description': 'duplicate'}],
@@ -57,7 +69,7 @@ class CaptionApiTests(unittest.TestCase):
                 payload = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 requests.append((self.path, self.headers, payload))
                 ids = json.loads(payload['messages'][1]['content'][0]['text'])['image_ids']
-                value = {'choices': [{'message': {'content': json.dumps({'images': [{'id': i, 'description': 'Visible '+i} for i in reversed(ids)]})}}]}
+                value = {'choices': [{'message': {'content': json.dumps({'images': [{'id': i, 'caption': 'Visible '+i} for i in reversed(ids)]})}}]}
                 data = json.dumps(value).encode()
                 self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(data)
             def log_message(self, *args): pass

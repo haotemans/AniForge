@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 10, 0),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 10, 1),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 T-pose views',
     'category': 'Render',
@@ -18,6 +18,7 @@ from .core import STYLES, GROUPS, GROUP_LABELS, BONES, recipe, three_view_recipe
 from .material_profiles import material_role, alpha_image, face_light, hair_color
 from .static_pose import find_bone, shape_blocks, apply_tpose, neutralize_face, CharacterState, has_animation
 from .camera import configure_camera, capture_camera, camera_apply, resolution
+from . import ui
 
 
 def model_meshes(settings):
@@ -179,7 +180,11 @@ class MLSettings(bpy.types.PropertyGroup):
     tags: StringProperty(name='附加标签', default='anime style, simple background')
     resolution: IntProperty(name='分辨率', default=1024, min=256, max=4096)
     preview_group: EnumProperty(name='取景范围', items=[(v, label, '') for v, label in GROUP_LABELS.items()])
-    plan_index: IntProperty(name='视角（1正 / 2左 / 3右 / 4背）', default=1, min=1, max=4, update=clamp_plan_index)
+    plan_index: IntProperty(name='视角', default=1, min=1, max=4, update=clamp_plan_index)
+    preview_view: EnumProperty(name='观察方向', items=[('FRONT', '正面', '0°', 1), ('LEFT', '左侧', '90°', 2),
+                                                     ('RIGHT', '右侧', '-90°', 3), ('BACK', '背面', '180°', 4)],
+                               get=lambda self: min(4, max(1, self.plan_index)),
+                               set=lambda self, value: setattr(self, 'plan_index', value), options={'SKIP_SAVE'})
     front: FloatProperty(name='角色正面角度', default=0, min=-180, max=180, description='0 表示朝向世界 -Y；90 表示朝向 +X')
     margin: FloatProperty(name='构图留白', default=1.18, min=1.02, max=2)
     camera_projection: EnumProperty(name='投影', items=[('ORTHO', '正交', ''), ('PERSP', '透视', '')], default='ORTHO')
@@ -202,7 +207,12 @@ class MLSettings(bpy.types.PropertyGroup):
     face_shadow_strength: FloatProperty(name='脸部阴影层强度', default=.3, min=0, max=1)
     running: BoolProperty(default=False, options={'SKIP_SAVE'})
     progress: StringProperty(default='等待开始', options={'SKIP_SAVE'})
-    ui_section: EnumProperty(name='功能', items=[('MATERIAL', '材质', '', 0), ('CAMERA', '镜头', '', 2), ('RENDER', '输出', '', 3), ('SHOTS', '四视图', '', 5)], default='SHOTS')
+    ui_textures: BoolProperty(name='贴图修复', default=False)
+    ui_material: BoolProperty(name='材质微调', default=False)
+    ui_camera: BoolProperty(name='高级镜头', default=False)
+    ui_presets: BoolProperty(name='镜头预设', default=False)
+    ui_tags: BoolProperty(name='附加训练标签', default=False)
+    ui_developer: BoolProperty(name='开发检查', default=False)
 
 
 class ML_OT_materials(bpy.types.Operator):
@@ -660,61 +670,9 @@ class ML_OT_preview(bpy.types.Operator):
             self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
 
 
-class ML_PT_panel(bpy.types.Panel):
-    bl_label = 'AniForge · T Pose 四视图渲染'; bl_idname = 'ML_PT_panel'
-    bl_space_type = 'VIEW_3D'; bl_region_type = 'UI'; bl_category = 'MMD LoRA'
-
-    def draw(self, context):
-        settings = context.scene.ml_settings
-        layout = self.layout; col = layout.column(); col.enabled = not settings.running
-        col.prop(settings, 'armature'); col.prop(settings, 'ui_section', expand=True)
-        section = settings.ui_section
-        if section == 'MATERIAL':
-            col.prop(settings, 'style')
-            col.label(text='先用 MMD Tools 导入 PMX / PMD', icon='INFO')
-            col.prop(settings, 'textures'); col.operator('ml.textures'); col.operator('ml.assign_textures')
-            col.prop(settings, 'material_profiles')
-            if settings.material_profiles:
-                for name in ('hair_highlight_strength', 'face_fill', 'face_shadow_strength'):
-                    col.prop(settings, name)
-            col.operator('ml.materials')
-        elif section == 'CAMERA':
-            col.prop(settings, 'camera_name'); col.prop(settings, 'camera_preset')
-            row = col.row(); row.operator('ml.camera_preset', text='应用镜头'); row.operator('ml.camera_preset', text='保存镜头').save = True
-            row = col.row(); row.operator('ml.import_cameras'); row.operator('ml.export_cameras')
-            col.prop(settings, 'preview_group'); col.prop(settings, 'plan_index')
-            if settings.preview_group == 'portrait':
-                col.prop(settings, 'portrait_focus')
-            col.prop(settings, 'camera_projection')
-            if settings.camera_projection == 'PERSP':
-                col.prop(settings, 'camera_lens')
-            for name in ('camera_aspect', 'front', 'margin', 'camera_azimuth', 'camera_elevation', 'camera_roll', 'camera_zoom', 'camera_shift_x', 'camera_shift_y', 'camera_target_offset'):
-                col.prop(settings, name)
-            col.operator('ml.frame_camera')
-        else:
-            col.label(text='唯一 T Pose · 自然面部', icon='ARMATURE_DATA')
-            col.label(text='肖像 4 · 半身 4 · 全身 4 · 下半身 4')
-            col.label(text='每组：正面 / 左侧 / 右侧 / 背面')
-            col.operator('ml.tpose')
-            col.prop(settings, 'preview_group'); col.prop(settings, 'plan_index')
-            col.label(text=selected_shot(settings)['title'])
-            col.operator('ml.shot_plan')
-            col.operator('ml.preview', text='渲染选中视图 1 张')
-            if section == 'RENDER':
-                for name in ('trigger', 'tags', 'resolution', 'output'):
-                    col.prop(settings, name)
-                col.operator('ml.render_dataset', text='生成 16 张四视图 + 标签', icon='RENDER_STILL').test_only = False
-                col.operator('ml.render_dataset', text='开发测试：正 / 侧 / 背 3 张').test_only = True
-            else:
-                col.operator('ml.shot_plan', text='查看 16 张清单').report_only = True
-        layout.label(text=settings.progress)
-        if settings.running:
-            layout.label(text='Esc 在单张渲染结束后停止')
-
-
 CLASSES = (MLSettings, ML_OT_materials, ML_OT_textures, ML_OT_assign_textures,
            ML_OT_camera_preset, ML_OT_import_cameras, ML_OT_export_cameras,
-           ML_OT_tpose, ML_OT_frame_camera, ML_OT_shot_plan, ML_OT_render, ML_OT_preview, ML_PT_panel)
+           ML_OT_tpose, ML_OT_frame_camera, ML_OT_shot_plan, ML_OT_render, ML_OT_preview, *ui.CLASSES)
 
 # Removed RNA/ID properties must not reactivate old workflows in saved projects.
 REMOVED_SETTINGS = ('presets_json', 'pose', 'expression', 'pose_strength', 'expression_strength', 'head_angles',
@@ -722,7 +680,7 @@ REMOVED_SETTINGS = ('presets_json', 'pose', 'expression', 'pose_strength', 'expr
                     'capture_all_keys', 'dataset_variation', 'pose_folder', 'pose_import_scale',
                     'pose_folder_report', 'slot_left_hand', 'slot_right_hand', 'slot_seat', 'developer_tools',
                     'mapping_report', 'physics_mode', 'physics_frames', 'animchar_reference', 'animchar_prompt',
-                    'animchar_rebuild', 'animchar_review_note', 'animchar_status')
+                    'animchar_rebuild', 'animchar_review_note', 'animchar_status', 'ui_section')
 
 
 @bpy.app.handlers.persistent
@@ -737,8 +695,6 @@ def migrate_settings(_=None):
         for name in REMOVED_SETTINGS:
             if name in settings:
                 del settings[name]
-        if settings.get('ui_section') in {1, 4}:
-            settings.ui_section = 'SHOTS'
         clamp_plan_index(settings)
 
 

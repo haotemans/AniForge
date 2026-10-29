@@ -47,7 +47,7 @@ frame = scene.frame_current; object_count = len(bpy.data.objects)
 settings['physics_mode'] = 1; settings['physics_frames'] = 240
 settings['ui_section'] = 4; addon.migrate_settings()
 assert not hasattr(settings, 'physics_mode')
-assert 'PHYSICS' not in settings.bl_rna.properties['ui_section'].enum_items.keys()
+assert 'ui_section' not in settings.bl_rna.properties
 
 with tempfile.TemporaryDirectory() as folder:
     settings.output = folder

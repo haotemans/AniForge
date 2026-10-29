@@ -75,11 +75,20 @@ settings['animchar_reference'] = 'old.png'; settings['dataset_variation'] = 1
 settings['ui_section'] = 1; settings['plan_index'] = 12
 settings['preview_group'] = 3
 addon.migrate_settings()
-assert settings.ui_section == 'SHOTS' and settings.plan_index == 4 and settings.preview_group == 'lower_body'
+assert not hasattr(settings, 'ui_section') and settings.plan_index == 4 and settings.preview_group == 'lower_body'
 assert all(name not in settings for name in addon.REMOVED_SETTINGS)
 assert addon.camera_library(settings)['cameras']['old lens']['camera_lens'] == 75
 assert 'pose' not in settings.bl_rna.properties and 'expression' not in settings.bl_rna.properties
 assert not any(name.startswith('mmd_lora_studio.animchar') for name in sys.modules)
+# Named view buttons are a UI alias for the existing persisted shot index.
+assert settings.preview_view == 'BACK'
+settings.preview_view = 'LEFT'
+assert settings.plan_index == 2 and addon.selected_shot(settings)['azimuth'] == 90
+settings.plan_index = 3
+assert settings.preview_view == 'RIGHT'
+settings.armature = None
+assert bpy.ops.ml.pick_character() == {'FINISHED'}
+assert settings.armature == rig
 
 with tempfile.TemporaryDirectory() as folder:
     settings.output = folder; settings.resolution = 256

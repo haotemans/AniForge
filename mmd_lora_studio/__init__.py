@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 10, 4),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 10, 5),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 T-pose views',
     'category': 'Render',
@@ -116,8 +116,18 @@ def toon_material(source, style, settings=None):
     multiply.location = (30, 100); multiply.inputs[0].default_value = 1
     multiply.inputs[1].default_value = tuple(source.diffuse_color) if source else (0.8, 0.8, 0.8, 1)
     tree.links.new(ramp.outputs[0], multiply.inputs[2])
-    if role == 'FACE':
-        tree.links.new(face_light(tree, settings), multiply.inputs[2])
+    soft_hair = style == 'NEVERNESS' and role == 'HAIR'
+    soft_skin = style == 'NEVERNESS' and role == 'SKIN'
+    if role == 'FACE' or soft_hair or soft_skin:
+        # Mingyin's bright hair/neck expose the generic binary light threshold
+        # as broad disconnected brown bands. Keep the painted albedo and use
+        # smooth normal lighting consistently with the already softened face.
+        tree.links.new(face_light(tree, settings, minimum=.82 if soft_hair else None,
+                                  role='Hair' if soft_hair else 'Skin' if soft_skin else 'Face'), multiply.inputs[2])
+        mat['mmd_lora_soft_light'] = True
+        tree.nodes.remove(rgb)
+        tree.nodes.remove(diffuse)
+        tree.nodes.remove(ramp)
     elif role in {'EYE', 'DECAL'}:
         # Shader to RGB evaluates transparent layers against the probe in
         # EEVEE's dithered path. Thin iris/decal layers must use direct color.

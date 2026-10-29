@@ -110,6 +110,25 @@ shader.inputs['Alpha'].default_value = 1
 profiled_face = addon.toon_material(regression, 'GENSHIN', settings)
 assert profiled_face['mmd_lora_role'] == 'FACE'
 assert any(n.type == 'NEW_GEOMETRY' for n in profiled_face.node_tree.nodes)
+assert not any(n.type == 'SHADERTORGB' for n in profiled_face.node_tree.nodes)
+# Mingyin's neck skin and reversed brow/lash naming need explicit profiles.
+regression.name = '肌1'
+assert material_role(regression) == 'SKIN'
+mingyin_skin = addon.toon_material(regression, 'NEVERNESS', settings)
+assert mingyin_skin['mmd_lora_soft_light']
+assert not any(n.type == 'SHADERTORGB' for n in mingyin_skin.node_tree.nodes)
+other_skin = addon.toon_material(regression, 'HSR', settings)
+assert any(n.type == 'SHADERTORGB' for n in other_skin.node_tree.nodes)
+regression.name = '前发'
+mingyin_hair = addon.toon_material(regression, 'NEVERNESS', settings)
+assert mingyin_hair['mmd_lora_soft_light']
+assert not any(n.type == 'SHADERTORGB' for n in mingyin_hair.node_tree.nodes)
+other_hair = addon.toon_material(regression, 'WUWA', settings)
+assert any(n.type == 'SHADERTORGB' for n in other_hair.node_tree.nodes)
+regression.name = '眉睫'
+assert material_role(regression) == 'EYE'
+mingyin_lashes = addon.toon_material(regression, 'NEVERNESS', settings)
+assert not any(n.type == 'SHADERTORGB' for n in mingyin_lashes.node_tree.nodes)
 regression.name = '目'
 profiled_eye = addon.toon_material(regression, 'WUWA', settings)
 assert profiled_eye['mmd_lora_role'] == 'EYE'

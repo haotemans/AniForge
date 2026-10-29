@@ -5,7 +5,7 @@ import re
 import bpy
 from mathutils import Vector
 
-ROLES = {'GENERIC', 'FACE', 'FACE_SHADOW', 'HAIR', 'HAIR_HIGHLIGHT', 'EYE', 'DECAL'}
+ROLES = {'GENERIC', 'FACE', 'SKIN', 'FACE_SHADOW', 'HAIR', 'HAIR_HIGHLIGHT', 'EYE', 'DECAL'}
 
 
 def material_role(source):
@@ -19,8 +19,10 @@ def material_role(source):
         return 'FACE_SHADOW'
     if name in {'面', '面2', '颜', '顏', 'face', 'skin_face'}:
         return 'FACE'
+    if re.fullmatch(r'(?:肌|体肌|skin|skin_body|body_skin)\d*', name):
+        return 'SKIN'
     if name in {'目', '白目', '白2', '目白', '目hl', '目光', '目光2', '目+hi', '目++hi',
-                '睫毛', '睫', '眉', '睫眉', 'eyes', 'iris'}:
+                '睫毛', '睫', '眉', '睫眉', '眉睫', 'eyes', 'iris'}:
         return 'EYE'
     if name in {'体肌+', '体下肌+', 'emo1', 'emo43', 'emo目', 'heng', 'cheek', 'skin_overlay', 'collar_decal'}:
         return 'DECAL'
@@ -53,9 +55,9 @@ def alpha_image(image):
     return result
 
 
-def face_light(tree, settings):
+def face_light(tree, settings, minimum=None, role='Face'):
     geometry = tree.nodes.new('ShaderNodeNewGeometry'); geometry.location = (-760, -470)
-    geometry.label = 'Face: smooth normals, independent of hair cast shadows'
+    geometry.label = role+': smooth normals, independent of cast shadows'
     dot = tree.nodes.new('ShaderNodeVectorMath'); dot.operation = 'DOT_PRODUCT'; dot.location = (-540, -470)
     front = math.radians(settings.front)
     side = Vector((math.cos(front), math.sin(front), 0))
@@ -63,10 +65,10 @@ def face_light(tree, settings):
     dot.inputs[1].default_value = (side * .3 + forward * .8 + Vector((0, 0, .5))).normalized()
     tree.links.new(geometry.outputs['Normal'], dot.inputs[0])
     ramp = tree.nodes.new('ShaderNodeValToRGB'); ramp.location = (-310, -470)
-    ramp.label = 'Face fill (no SDF texture required)'
+    ramp.label = role+' fill (no SDF texture required)'
     ramp.color_ramp.interpolation = 'EASE'
     ramp.color_ramp.elements[0].position = 0
-    low = settings.face_fill
+    low = settings.face_fill if minimum is None else minimum
     ramp.color_ramp.elements[0].color = (low, low * .995, low * .99, 1)
     ramp.color_ramp.elements[1].position = .85
     ramp.color_ramp.elements[1].color = (1, 1, 1, 1)

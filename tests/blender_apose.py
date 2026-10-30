@@ -131,7 +131,7 @@ with tempfile.TemporaryDirectory() as folder:
                 if shot['group'] == 'lower_body':
                     roi = session.camera_meta['roi']
                     assert min(p[2] for p in roi) <= .001
-                    assert 1 < max(p[2] for p in roi) < 1.5
+                    assert .9 <= max(p[2] for p in roi) <= 1.1
         finally:
             session.close('checked_without_rendering')
         assert not driver.mute and not constraint.mute

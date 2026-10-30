@@ -112,6 +112,62 @@ def face_bounds(meshes, depsgraph):
     return (lo, hi) if hi.z - lo.z > .00001 else None
 
 
+def bone_region_points(meshes, depsgraph, rig, keys, bottom=-math.inf, top=math.inf):
+    """Use evaluated skin weights, so hair/props do not widen a leg close-up."""
+    roots = [bone for key in keys if (bone := find_bone(rig, key)) is not None] if rig else []
+    names = {bone.name for root in roots for bone in (root, *root.children_recursive)}
+    if not names:
+        return []
+    points = []
+    for obj in meshes:
+        if obj.hide_render:
+            continue
+        indices = {group.index for group in obj.vertex_groups if group.name in names}
+        parent = obj
+        attached = False
+        while parent:
+            if parent.parent == rig and parent.parent_type == 'BONE' and parent.parent_bone in names:
+                attached = True
+                break
+            parent = parent.parent
+        if not indices and not attached:
+            continue
+        evaluated = obj.evaluated_get(depsgraph)
+        for vertex in evaluated.data.vertices:
+            if not attached and sum(g.weight for g in vertex.groups if g.group in indices) < .25:
+                continue
+            point = evaluated.matrix_world @ vertex.co
+            if bottom <= point.z <= top:
+                points.append(point)
+    return points
+
+
+def region_bounds(points):
+    return (Vector(tuple(min(p[i] for p in points) for i in range(3))),
+            Vector(tuple(max(p[i] for p in points) for i in range(3))))
+
+
+def head_region(meshes, depsgraph, rig, head, face, body_height):
+    # Long hair below the chin is intentionally outside a head-detail crop.
+    bottom = face[0].z - (face[1].z-face[0].z)*.06 if face else head.z-body_height*.025 if head is not None else None
+    if bottom is None:
+        return None
+    points = bone_region_points(meshes, depsgraph, rig, ('head',), bottom=bottom)
+    if not points:
+        # Imported meshes without usable weights can still identify face/hair.
+        for obj in meshes:
+            if obj.hide_render:
+                continue
+            slots = {i for i, slot in enumerate(obj.material_slots) if slot.material and material_role(slot.material) in
+                     {'FACE', 'EYE', 'HAIR', 'HAIR_HIGHLIGHT'}}
+            evaluated = obj.evaluated_get(depsgraph)
+            indices = {v for poly in evaluated.data.polygons if poly.material_index in slots for v in poly.vertices}
+            points.extend(p for i in indices if (p := evaluated.matrix_world @ evaluated.data.vertices[i].co).z >= bottom)
+    if face:
+        points.extend(box_points(*face))
+    return region_bounds(points) if points else None
+
+
 def configure_camera(context, settings, meshes, camera, shot):
     settings = ShotSettings(settings, shot)
     scene = context.scene
@@ -138,15 +194,24 @@ def configure_camera(context, settings, meshes, camera, shot):
     if group == 'full_body':
         points = box_points(lo, hi)
         target = center.copy()
-    elif group == 'portrait' and (face := face_bounds(meshes, context.evaluated_depsgraph_get())):
-        face_lo, face_hi = face
-        face_height = face_hi.z - face_lo.z
-        target = (face_lo + face_hi) / 2 + Vector((0, 0, face_height * .1))
-        multiplier = 1.55 if (focus or settings.portrait_focus) == 'FACE' else 2.6
-        size = max(face_height * multiplier, (face_hi.x-face_lo.x) * 1.5 / aspect)
-        roi_lo = target - Vector((size*aspect*.5, (face_hi.y-face_lo.y)*.5, size*.5))
-        roi_hi = target + Vector((size*aspect*.5, (face_hi.y-face_lo.y)*.5, size*.5))
-        points = box_points(roi_lo, roi_hi)
+    elif group == 'portrait':
+        dg = context.evaluated_depsgraph_get()
+        face = face_bounds(meshes, dg)
+        region = head_region(meshes, dg, rig, head, face, body_height)
+        if (focus or settings.portrait_focus) == 'FACE' and face:
+            face_lo, face_hi = face
+            face_height = face_hi.z - face_lo.z
+            target = (face_lo+face_hi)/2 + Vector((0, 0, face_height*.1))
+            size = max(face_height*1.55, (face_hi.x-face_lo.x)*1.5/aspect)
+            half = Vector((size*aspect*.5, (face_hi.y-face_lo.y)*.5, size*.5))
+            points = box_points(target-half, target+half)
+        elif region:
+            points = box_points(*region)
+            target = (region[0]+region[1])*.5
+        else:
+            target = head.copy() if head is not None else Vector((center.x, center.y, lo.z+height*.87))
+            half = Vector((body_height*.12, body_height*.12, body_height*.14))
+            points = box_points(target-half, target+half)
     elif group == 'half_body' and head is not None and hips is not None:
         top = head + Vector((0, 0, body_height*.15))
         bottom = hips - Vector((0, 0, body_height*.05))
@@ -155,22 +220,32 @@ def configure_camera(context, settings, meshes, camera, shot):
         half = Vector((size*aspect*.5, body_height*.18, size*.5))
         points = box_points(target-half, target+half)
     elif group == 'lower_body':
-        # Fit actual evaluated clothing/leg geometry from waist/hips to the sole.
-        # Full-mesh bounds would include the arms and defeat this crop.
-        waist_z = (hips.z + body_height*.09) if hips is not None else lo.z+height*.58
-        waist_z = min(hi.z, max(lo.z+height*.3, waist_z))
-        crop = []
+        # Upper thighs through the complete footwear; exclude long hair, hands
+        # and skirt flare from the fit while leaving them visible in the scene.
+        thighs = [p for key in ('left_leg', 'right_leg') if (p := joint(key)) is not None]
+        top_z = max(p.z for p in thighs)+body_height*.025 if thighs else hips.z if hips is not None else lo.z+height*.53
+        top_z = min(hi.z, max(lo.z+height*.3, top_z))
         dg = context.evaluated_depsgraph_get()
-        for obj in meshes:
-            if obj.hide_render:
-                continue
-            evaluated = obj.evaluated_get(dg)
-            crop.extend(p for v in evaluated.data.vertices if (p := evaluated.matrix_world @ v.co).z <= waist_z)
+        crop = bone_region_points(meshes, dg, rig,
+                                  ('left_leg', 'right_leg', 'left_knee', 'right_knee', 'left_ankle', 'right_ankle'), top=top_z)
+        if not crop:
+            anchor = hips if hips is not None else center
+            for obj in meshes:
+                if obj.hide_render:
+                    continue
+                evaluated = obj.evaluated_get(dg)
+                slots = {i for i, slot in enumerate(obj.material_slots) if slot.material and
+                         material_role(slot.material) in {'HAIR', 'HAIR_HIGHLIGHT'}}
+                hair = {v for poly in evaluated.data.polygons if poly.material_index in slots for v in poly.vertices}
+                crop.extend(p for v in evaluated.data.vertices if v.index not in hair and
+                            (p := evaluated.matrix_world @ v.co).z <= top_z and abs((p-anchor).dot(side)) <= body_height*.24)
         if crop:
-            crop_lo = Vector(tuple(min(p[i] for p in crop) for i in range(3)))
-            crop_hi = Vector((max(p.x for p in crop), max(p.y for p in crop), waist_z))
+            crop_lo, crop_hi = region_bounds(crop)
+            crop_hi.z = top_z
         else:
-            crop_lo = lo.copy(); crop_hi = Vector((hi.x, hi.y, waist_z))
+            anchor = hips if hips is not None else center
+            crop_lo = Vector((anchor.x-body_height*.18, anchor.y-body_height*.18, lo.z))
+            crop_hi = Vector((anchor.x+body_height*.18, anchor.y+body_height*.18, top_z))
         points = box_points(crop_lo, crop_hi)
         target = (crop_lo+crop_hi)*.5
     else:

@@ -98,7 +98,7 @@ class ShotSettings:
 
 
 def caption(trigger, group, view):
-    framing = {'portrait': 'portrait, face focus', 'half_body': 'upper body',
+    framing = {'portrait': 'portrait, head focus', 'half_body': 'upper body',
                'full_body': 'full body', 'lower_body': 'lower body, legs, feet'}
     direction = {'front': 'front view', 'left': 'left side view', 'right': 'right side view', 'back': 'from behind', 'side': 'side view'}
     # Cropped portraits do not show the arms and should not teach a visible A pose.

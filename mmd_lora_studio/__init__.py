@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 0),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 1),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 A-pose views',
     'category': 'Render',
@@ -263,7 +263,7 @@ class MLSettings(bpy.types.PropertyGroup):
     camera_shift_y: FloatProperty(name='垂直移轴', default=0, min=-.4, max=.4, update=schedule_preview)
     camera_target_offset: FloatVectorProperty(name='对焦偏移（身高比例）', size=3, default=(0, 0, 0), min=-.5, max=.5, update=schedule_preview)
     camera_aspect: EnumProperty(name='画幅', items=[('SQUARE', '1:1 方形', ''), ('PORTRAIT', '3:4 竖幅', ''), ('LANDSCAPE', '4:3 横幅', '')], default='SQUARE', update=schedule_preview)
-    portrait_focus: EnumProperty(name='肖像范围', items=[('HEAD', '头肩（按脸部定位）', ''), ('FACE', '脸部特写', '')], default='HEAD', update=schedule_preview)
+    portrait_focus: EnumProperty(name='肖像范围', items=[('HEAD', '完整头部细节', '脸部、发型和头饰'), ('FACE', '脸部特写', '')], default='HEAD', update=schedule_preview)
     camera_name: StringProperty(name='镜头预设名称', maxlen=80)
     camera_status: StringProperty(default='', options={'SKIP_SAVE'})
     camera_presets_json: StringProperty(default='')

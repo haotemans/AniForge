@@ -1,6 +1,6 @@
 # AniForge · A Pose 四视图渲染
 
-Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前版本 **0.12.0**。
+Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前版本 **0.12.1**。
 
 每个角色只使用一个 A Pose，面部保持自然状态。正式输出固定为 **16 张**：
 
@@ -9,13 +9,15 @@ Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前�
 | 肖像 | 4 | 正面 0°、左侧 90°、右侧 -90°、背面 180° |
 | 半身 | 4 | 同上 |
 | 全身 | 4 | 同上 |
-| 下半身 | 4 | 同上，腰胯至脚底，包含鞋子 |
+| 下半身 | 4 | 同上，大腿上部至脚底，包含完整鞋子 |
+
+肖像默认聚焦完整头部，突出脸部、发型和头饰；下半身按腿脚骨骼关联的实际几何取景，突出双腿、袜面和鞋子，长发与裙摆不再把腿脚主体缩小。完整头部范围保留发顶及头饰，仍可切换为脸部特写。全身和半身沿用原构图。
 
 保留六款游戏的材质风格、贴图重连与匹配、头发高光、脸部补光、眼部与饰件透明层处理、EEVEE 白底渲染、镜头控制、PNG、同名训练标签、运行清单和中止恢复。已移除其他动作、手型、表情预设、VPD 导入、AnimChar 生成与镜头动作绑定。无需 AnimChar 账号或服务。
 
 ## 安装与使用
 
-运行 `python tools/build_zip.py`，在 Blender 偏好设置中从磁盘安装 `dist/mmd_lora_studio-0.12.0.zip`。升级时关闭 Blender，用新包替换旧的 `mmd_lora_studio` 文件夹，避免残留旧模块；重新启动后生效。
+运行 `python tools/build_zip.py`，在 Blender 偏好设置中从磁盘安装 `dist/mmd_lora_studio-0.12.1.zip`。升级时关闭 Blender，用新包替换旧的 `mmd_lora_studio` 文件夹，避免残留旧模块；重新启动后生效。
 
 1. 使用 MMD Tools 导入 PMX/PMD，打开侧栏 **MMD LoRA**。
 2. 展开 **1 角色与材质**：选择角色骨架，或选中角色网格后点击吸管识别，选择后自动创建或复用一个相机并切换为白底，选择游戏风格并应用三渲二。贴图修复和材质微调默认收起。
@@ -53,6 +55,7 @@ python -m unittest discover -s tests
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_smoke.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_static_render.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_apose.py
+& 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_framing.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_output.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_modal.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_captioning.py

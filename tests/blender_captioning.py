@@ -170,7 +170,7 @@ try:
         assert len(list(dataset.glob('*.txt'))) == 16
         for i in range(1, 17):
             text = (dataset/f'frame_{i:02}.txt').read_text(encoding='utf-8')
-            assert text.startswith('@3d, LOCAL_CHARACTER_A, ')
+            assert text.startswith('@3d, LOCAL CHARACTER A, ')
             assert f'image_{i:03}' in text
         assert 'unit-test-key' not in (dataset_metadata_dir(dataset)/'caption_cache.json').read_text()
         assert len(bpy.data.images) == image_count
@@ -179,7 +179,7 @@ try:
         settings.trigger = 'LOCAL_CHARACTER_B'
         captioning.start(bpy.context, dataset, config=config, blocking=True)
         assert requests == [1]*16
-        assert all(p.read_text().startswith('@3d, LOCAL_CHARACTER_B, ') for p in dataset.glob('*.txt'))
+        assert all(p.read_text().startswith('@3d, LOCAL CHARACTER B, ') for p in dataset.glob('*.txt'))
 
         cache_path = dataset_metadata_dir(dataset)/'caption_cache.json'; cache = json.loads(cache_path.read_text())
         for i in range(1, 9):
@@ -208,7 +208,7 @@ try:
         old_requests = len(requests)
         job = captioning.start(bpy.context, legacy, config=config, blocking=True)
         assert job.done == 1 and len(requests) == old_requests
-        assert old_image.with_suffix('.txt').read_text().startswith('@3d, LOCAL_CHARACTER_B, ')
+        assert old_image.with_suffix('.txt').read_text().startswith('@3d, LOCAL CHARACTER B, ')
         assert json.loads((dataset_metadata_dir(legacy)/'manifest.json').read_text())['dataset_status'] == 'READY'
         assert hashlib.sha256(old_image.read_bytes()).hexdigest() == hashlib.sha256(source.read_bytes()).hexdigest()
         settings.output = str(legacy)

@@ -103,7 +103,8 @@ def caption(trigger, group, view):
     direction = {'front': 'front view', 'left': 'left side view', 'right': 'right side view', 'back': 'from behind', 'side': 'side view'}
     # Cropped portraits do not show the arms and should not teach a visible A pose.
     pose = 'a-pose, arms angled down' if group in {'half_body', 'full_body'} else ''
-    return ', '.join(x for x in ('@3d', trigger.strip(), '1person', framing[group], direction[view], pose) if x)
+    character = ' '.join(trigger.replace('_', ' ').split()).strip(' ,，')
+    return ', '.join(x for x in ('@3d', character, '1person', framing[group], direction[view], pose) if x)
 
 
 def validate_camera_library(value):

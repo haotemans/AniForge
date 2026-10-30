@@ -73,6 +73,10 @@ class CaptionApiTests(unittest.TestCase):
         self.assertEqual(api.camera_context({'group': [], 'view': {}}), {})
 
     def test_prefix_and_one_utf8_sidecar_per_image(self):
+        self.assertEqual(api.format_caption('phoenix_reffaella', 'Visible clothing.'),
+                         '@3d, phoenix reffaella, Visible clothing.')
+        self.assertEqual(api.format_caption(' __phoenix___reffaella__ ', 'Visible clothing.'),
+                         '@3d, phoenix reffaella, Visible clothing.')
         with tempfile.TemporaryDirectory() as folder:
             for name in ('front', 'back'):
                 image = Path(folder)/(name+'.png')

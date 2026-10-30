@@ -39,6 +39,8 @@ class RecipeTests(unittest.TestCase):
         self.assertIn('from behind', core.caption('character', 'portrait', 'back'))
         self.assertNotIn('a-pose', core.caption('character', 'portrait', 'front'))
         self.assertIn('a-pose', core.caption('character', 'full_body', 'left'))
+        self.assertTrue(core.caption('phoenix_reffaella', 'portrait', 'front').startswith('@3d, phoenix reffaella, '))
+        self.assertEqual(core.safe_name('phoenix_reffaella'), 'phoenix_reffaella')
 
     def test_coverage(self):
         self.assertEqual(core.dataset_coverage(core.recipe())['per_group'], dict.fromkeys(core.GROUPS, 4))

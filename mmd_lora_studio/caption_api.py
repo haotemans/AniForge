@@ -233,7 +233,7 @@ def request_batch(config, images):
 
 
 def format_caption(character, description):
-    character = ' '.join(character.split()).strip(' ,，')
+    character = ' '.join(character.replace('_', ' ').split()).strip(' ,，')
     description = ' '.join(description.split()).strip()
     if not character:
         raise CaptionError('请先填写角色名。')

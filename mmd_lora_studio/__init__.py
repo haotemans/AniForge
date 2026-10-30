@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 5),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 6),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 A-pose views',
     'category': 'Render',
@@ -241,7 +241,8 @@ class MLSettings(bpy.types.PropertyGroup):
     style: EnumProperty(name='游戏风格', items=[(k, v[0], '风格近似预设，非官方着色器') for k, v in STYLES.items()])
     output: StringProperty(name='输出目录', subtype='DIR_PATH', default='//lora_dataset')
     textures: StringProperty(name='贴图目录', subtype='DIR_PATH')
-    trigger: StringProperty(name='角色触发词', default='my_character')
+    trigger: StringProperty(name='角色触发词', default='my_character',
+                            description='TXT中的角色名自动将下划线转为空格，文件名仍按安全命名规则保存')
     api_caption: BoolProperty(name='API 自动打标', default=False, update=caption_mode_changed)
     caption_running: BoolProperty(default=False, options={'SKIP_SAVE'})
     caption_status: StringProperty(default='', options={'SKIP_SAVE'})

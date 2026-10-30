@@ -18,7 +18,7 @@ import bpy
 import numpy as np
 import mmd_lora_studio as addon
 from mmd_lora_studio import captioning
-from mmd_lora_studio.caption_api import ApiConfig
+from mmd_lora_studio.caption_api import ApiConfig, FRAMING_HINTS, VIEW_HINTS
 from mmd_lora_studio.core import dataset_metadata_dir
 
 addon.register()
@@ -56,6 +56,16 @@ class Handler(BaseHTTPRequestHandler):
         payload = json.loads(raw)
         content = payload['messages'][1]['content']
         ids = json.loads(content[0]['text'])['image_ids']
+        metadata = {item['id']: item for part in content[1:] if part['type'] == 'text'
+                    for item in [json.loads(part['text'])]}
+        if len(ids) == 8:
+            for key in ids:
+                index = int(key.rsplit('_', 1)[1])-1
+                expected_group = tuple(FRAMING_HINTS)[index//4]
+                expected_view = ('front', 'left', 'right', 'back')[index%4]
+                hint = metadata[key]['render_context']
+                assert hint['framing'] == FRAMING_HINTS[expected_group]
+                assert hint['view'] == VIEW_HINTS[expected_view]
         images = [part['image_url']['url'] for part in content if part['type'] == 'image_url']
         assert len(ids) == len(images) and len(images) <= 8
         for image in images:
@@ -78,7 +88,8 @@ def fixture(root, source, count):
     shots = []
     for i in range(1, count+1):
         image = root/f'frame_{i:02}.png'; shutil.copyfile(source, image)
-        shots.append({'image': image.name, 'caption_status': 'API_PENDING'})
+        shots.append({'image': image.name, 'caption_status': 'API_PENDING',
+                      'group': tuple(FRAMING_HINTS)[(i-1)//4], 'view': ('front', 'left', 'right', 'back')[(i-1)%4]})
     metadata = dataset_metadata_dir(root); metadata.mkdir(parents=True, exist_ok=True)
     (metadata/'manifest.json').write_text(json.dumps({'shots': shots}), encoding='utf-8')
 
@@ -179,6 +190,18 @@ try:
         assert len(requests) == 6 and requests[-1] == 8
         assert '停止' in settings.caption_status
         assert len(bpy.data.images) == image_count
+
+        # Editing the camera hint invalidates only that image's cached caption.
+        metadata = dataset_metadata_dir(dataset)/'manifest.json'
+        manifest = json.loads(metadata.read_text())
+        manifest['shots'][0]['view'] = 'back'
+        metadata.write_text(json.dumps(manifest), encoding='utf8')
+        previous_requests = len(requests)
+        job = captioning.start(bpy.context, dataset, config=config, blocking=True)
+        assert job.done == 16 and len(requests) == previous_requests+1 and requests[-1] == 1
+        assert job.cache['images']['frame_01.png']['context']['view'] == 'back'
+        assert hashes == {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in dataset.glob('*.png')}
+        assert all(p.is_file() and p.suffix in {'.png','.txt'} for p in dataset.iterdir())
 finally:
     captioning.shutdown(); addon.unregister()
     server.shutdown(); server.server_close(); thread.join()

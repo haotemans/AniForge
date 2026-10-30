@@ -158,6 +158,7 @@ class ML_PT_framing(bpy.types.Panel):
             col.label(text='头部细节 · 脸部 / 发型 / 头饰')
         elif settings.preview_group == 'lower_body':
             col.label(text='腿部与脚部 · 大腿上部至完整鞋底')
+            col.label(text='出图自动排除手臂残片')
         actions = col.column(align=True); actions.enabled = ready(context)
         actions.scale_y = 1.15
         actions.operator('ml.shot_plan', text='刷新自动相机 · 不出图', icon='VIEW_CAMERA')

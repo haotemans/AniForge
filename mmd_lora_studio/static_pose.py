@@ -1,5 +1,6 @@
 """Static A pose and natural face only. No selectable pose/expression presets."""
 import math
+from contextlib import contextmanager
 
 import bpy
 from mathutils import Matrix, Vector
@@ -108,6 +109,72 @@ def apply_apose(settings):
             bpy.context.view_layer.update()
             changed.append(bone.name)
     return changed
+
+
+@contextmanager
+def lower_body_arm_mask(settings, meshes, enabled=True):
+    """Exclude arm fragments only while drawing a lower-body image.
+
+    Mixed body meshes use private data and a temporary modifier. Neither the
+    source mesh/weights nor the shared A pose is edited. Always unwind on error.
+    """
+    info = {'excluded_arm_vertices': 0, 'hidden_arm_objects': 0}
+    if not enabled:
+        yield info
+        return
+    rig = settings.armature
+    roots = [b for key in ('left_arm', 'right_arm', 'left_elbow', 'right_elbow', 'left_wrist', 'right_wrist')
+             if (b := find_bone(rig, key)) is not None]
+    names = {b.name for root in roots for b in (root, *root.children_recursive)}
+    changes = []
+    try:
+        for obj in meshes:
+            if obj.hide_render:
+                continue
+            parent = obj
+            attached = False
+            while parent:
+                if parent.parent == rig and parent.parent_type == 'BONE' and parent.parent_bone in names:
+                    attached = True
+                    break
+                parent = parent.parent
+            indices = {g.index for g in obj.vertex_groups if g.name in names}
+            vertices = [v.index for v in obj.data.vertices if
+                        sum(g.weight for g in v.groups if g.group in indices) >= .5]
+            if not attached and not vertices:
+                continue
+            state = {'object': obj, 'hidden': obj.hide_render, 'source': obj.data,
+                     'copy': None, 'group': None, 'modifier': None}
+            changes.append(state)
+            info['excluded_arm_vertices'] += len(vertices)
+            if attached or len(vertices) == len(obj.data.vertices):
+                obj.hide_render = True
+                info['hidden_arm_objects'] += 1
+                continue
+            if obj.mode == 'EDIT':
+                raise ValueError('下半身出图前请先退出网格编辑模式。')
+            duplicate = state['copy'] = obj.data.copy()
+            duplicate.name = obj.data.name + '_AniForgeLowerBody'
+            obj.data = duplicate
+            group = state['group'] = obj.vertex_groups.new(name='AniForge excluded arms')
+            group.add(vertices, 1, 'REPLACE')
+            mask = state['modifier'] = obj.modifiers.new('AniForge lower-body crop', 'MASK')
+            mask.vertex_group = group.name; mask.invert_vertex_group = True
+            mask.threshold = .5; mask.use_smooth = False
+        bpy.context.view_layer.update()
+        yield info
+    finally:
+        for state in reversed(changes):
+            obj = state['object']
+            if state['modifier'] is not None:
+                obj.modifiers.remove(state['modifier'])
+            if state['group'] is not None:
+                obj.vertex_groups.remove(state['group'])
+            obj.data = state['source']
+            obj.hide_render = state['hidden']
+            if state['copy'] is not None:
+                bpy.data.meshes.remove(state['copy'])
+        bpy.context.view_layer.update()
 
 
 class CharacterState:

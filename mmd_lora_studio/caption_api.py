@@ -3,6 +3,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -12,13 +13,30 @@ from urllib.request import Request, HTTPRedirectHandler, build_opener
 
 BATCH_SIZE = 8
 IMAGE_SIZE = 1024
-PROMPT_VERSION = 2
+PROMPT_VERSION = 3
+
+FRAMING_HINTS = {'portrait': 'head-detail portrait; focus on the visible head, hair and accessories',
+                 'half_body': 'upper-body framing', 'full_body': 'full-body framing',
+                 'lower_body': 'lower-body detail; focus on visible legs, leg garments, feet and footwear'}
+VIEW_HINTS = {'front': 'front view', 'left': 'left side view', 'right': 'right side view',
+              'back': 'rear view, from behind', 'side': 'side view',
+              'front_left': 'front three-quarter view from the left',
+              'front_right': 'front three-quarter view from the right',
+              'back_left': 'rear three-quarter view from the left',
+              'back_right': 'rear three-quarter view from the right'}
 
 SYSTEM_PROMPT = """Write a detailed, visually grounded English caption for image-model training.
 Inspect each actual image independently. If matching Danbooru general tags are supplied,
 they are fallible hints, not a script to paraphrase. Use the image as the primary evidence.
 Correct misleading hints, omit unsupported hints, and describe clearly visible details
 even when absent from hints. Never mix details between images in a batch.
+Each image may have its own render_context describing its intended framing and
+viewpoint. These are fallible camera hints for that image ID only, not visible
+facts to repeat. Check them against the image and let visible evidence override
+any conflict. Use a lower-body rear-view hint to focus on the visible back of the
+legs and footwear, without inventing a face, eyes, chest, hands or off-frame pose.
+For a rear head view, describe visible hair and head accessories without inventing
+facial details. Do not mention metadata keys or numeric camera angles in the prose.
 
 Before writing, inspect these aspects internally without outputting a checklist or reasoning:
 1. Subjects: visible number, placement, hairstyle and hair color, visible eye color,
@@ -69,6 +87,38 @@ class CaptionError(ValueError):
     pass
 
 
+def camera_context(shot):
+    """Whitelist camera facts; never send names, paths or arbitrary scene text."""
+    if not isinstance(shot, dict):
+        return {}
+    result = {}
+    if isinstance(shot.get('group'), str) and shot['group'] in FRAMING_HINTS:
+        result['framing'] = shot['group']
+    if isinstance(shot.get('view'), str) and shot['view'] in VIEW_HINTS:
+        result['view'] = shot['view']
+    camera = shot.get('camera', {})
+    angle = camera.get('azimuth') if isinstance(camera, dict) else None
+    if isinstance(angle, (int, float)) and not isinstance(angle, bool) and math.isfinite(angle):
+        result['azimuth_degrees'] = round((angle+180) % 360-180, 3)
+        views = ('front', 'front_left', 'left', 'back_left', 'back', 'back_right', 'right', 'front_right')
+        result['view'] = views[int((angle+22.5) % 360//45)]
+    return result
+
+
+def context_payload(context):
+    if not isinstance(context, dict):
+        return {}
+    result = {}
+    if isinstance(context.get('framing'), str) and context['framing'] in FRAMING_HINTS:
+        result['framing'] = FRAMING_HINTS[context['framing']]
+    if isinstance(context.get('view'), str) and context['view'] in VIEW_HINTS:
+        result['view'] = VIEW_HINTS[context['view']]
+    angle = context.get('azimuth_degrees')
+    if isinstance(angle, (int, float)) and not isinstance(angle, bool) and math.isfinite(angle):
+        result['azimuth_degrees'] = round((angle+180) % 360-180, 3)
+    return result
+
+
 @dataclass(frozen=True)
 class ApiConfig:
     base_url: str
@@ -115,7 +165,11 @@ def make_payload(config, images):
         instruction += '\nUser language override: write the caption prose in Simplified Chinese. All visual grounding and JSON rules remain; do not apply the English word target to Chinese captions.\n'
     content = [{'type': 'text', 'text': json.dumps({'image_ids': [i['id'] for i in images]})}]
     for item in images:
-        content += [{'type': 'text', 'text': json.dumps({'id': item['id']})},
+        metadata = {'id': item['id']}
+        hint = context_payload(item.get('context'))
+        if hint:
+            metadata['render_context'] = hint
+        content += [{'type': 'text', 'text': json.dumps(metadata)},
                     {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,'+base64.b64encode(item['png']).decode('ascii')}}]
     return {'model': config.model.strip(), 'messages': [{'role': 'system', 'content': instruction},
                                                       {'role': 'user', 'content': content}],

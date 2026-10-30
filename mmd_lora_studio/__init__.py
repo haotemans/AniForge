@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 1),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 2),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 A-pose views',
     'category': 'Render',
@@ -18,7 +18,7 @@ from mathutils import Vector
 
 from .core import STYLES, GROUPS, GROUP_LABELS, BONES, recipe, three_view_recipe, dataset_coverage, caption, safe_name, write_json, validate_camera_library, dataset_metadata_dir
 from .material_profiles import material_role, alpha_image, face_light, hair_color
-from .static_pose import find_bone, shape_blocks, apply_apose, neutralize_face, CharacterState, has_animation
+from .static_pose import find_bone, shape_blocks, apply_apose, neutralize_face, CharacterState, has_animation, lower_body_arm_mask
 from .camera import configure_camera, capture_camera, camera_apply, resolution, ensure_camera, remember_camera, restore_camera, white_world, white_view
 from .output import save_white_crop, show_output
 from . import ui, captioning
@@ -644,9 +644,12 @@ class RenderSession:
             r.filepath = str(raw)
             r.image_settings.color_mode = 'RGBA'; r.image_settings.color_depth = '16'; r.film_transparent = True
             try:
-                bpy.ops.render.render(write_still=True)
+                with lower_body_arm_mask(self.settings, self.meshes, group == 'lower_body') as cleanup:
+                    bpy.ops.render.render(write_still=True)
                 r.image_settings.color_mode = 'RGB'; r.image_settings.color_depth = '8'; r.film_transparent = False
                 self.output_meta = save_white_crop(self.scene, raw, image, self.settings.crop_padding, self.settings.auto_crop)
+                if group == 'lower_body':
+                    self.output_meta['subject_cleanup'] = cleanup
             finally:
                 r.filepath = str(image)
                 r.image_settings.color_mode = 'RGB'; r.image_settings.color_depth = '8'; r.film_transparent = False

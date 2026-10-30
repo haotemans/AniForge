@@ -1,6 +1,6 @@
 # AniForge · A Pose 四视图渲染
 
-Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前版本 **0.12.1**。
+Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前版本 **0.12.2**。
 
 每个角色只使用一个 A Pose，面部保持自然状态。正式输出固定为 **16 张**：
 
@@ -13,11 +13,13 @@ Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前�
 
 肖像默认聚焦完整头部，突出脸部、发型和头饰；下半身按腿脚骨骼关联的实际几何取景，突出双腿、袜面和鞋子，长发与裙摆不再把腿脚主体缩小。完整头部范围保留发顶及头饰，仍可切换为脸部特写。全身和半身沿用原构图。
 
+下半身出图期间临时排除手臂和手部，避免画面角落或腿旁出现悬空残片；腿脚、头发与服装保留。混合身体网格使用临时副本，成功、取消或失败后恢复原网格、权重、形态键和可见性；其他取景与默认A Pose不变。
+
 保留六款游戏的材质风格、贴图重连与匹配、头发高光、脸部补光、眼部与饰件透明层处理、EEVEE 白底渲染、镜头控制、PNG、同名训练标签、运行清单和中止恢复。已移除其他动作、手型、表情预设、VPD 导入、AnimChar 生成与镜头动作绑定。无需 AnimChar 账号或服务。
 
 ## 安装与使用
 
-运行 `python tools/build_zip.py`，在 Blender 偏好设置中从磁盘安装 `dist/mmd_lora_studio-0.12.1.zip`。升级时关闭 Blender，用新包替换旧的 `mmd_lora_studio` 文件夹，避免残留旧模块；重新启动后生效。
+运行 `python tools/build_zip.py`，在 Blender 偏好设置中从磁盘安装 `dist/mmd_lora_studio-0.12.2.zip`。升级时关闭 Blender，用新包替换旧的 `mmd_lora_studio` 文件夹，避免残留旧模块；重新启动后生效。
 
 1. 使用 MMD Tools 导入 PMX/PMD，打开侧栏 **MMD LoRA**。
 2. 展开 **1 角色与材质**：选择角色骨架，或选中角色网格后点击吸管识别，选择后自动创建或复用一个相机并切换为白底，选择游戏风格并应用三渲二。贴图修复和材质微调默认收起。
@@ -25,6 +27,8 @@ Blender 4.2+ / 5.2 的 MMD 角色三渲二与训练图片输出插件。当前�
 4. 展开 **3 渲染与输出**：设置角色触发词、渲染长边和输出目录，确认画布尺寸，点击“开始渲染 · 全部16张”。目录旁的文件夹按钮可打开已有输出目录。API打标配置与开发检查默认收起。填写角色名并启用“渲染后API打标”后，可用自填接口生成每张图片的详细描述。
 
 标签格式为 `@3d, 角色名, 图片详细描述`，每张图对应一个同目录同名TXT。API模式每批最多8张，16张分成8＋8；图片仅在内存中按原比例缩小，最长边不超过1024，不拉伸、不补方图，也不放大小图，原4K图不变，按JSON图片ID解析描述。支持已有图片补打标、成功结果缓存、失败项重试，以及改角色名后只在本地更新前缀。Base URL、Key和视觉模型由用户填写，详见 [API打标说明](docs/caption_api.md)。
+
+每张图片的JSON元数据附带独立镜头提示，例如“下半身细节、背面”，优先读取该图清单里的取景与实际镜头角度。提示只辅助观察，实际图像优先；不得按“背面”提示编造看不到的脸、眼睛、胸部或手。未识别的图片不猜测方向，也不从文件序号03猜测背面/右侧。角色名、文件名与路径不发给API；修改某张图的镜头提示时只重新请求这一张的描述。
 
 每次渲染创建一个角色文件夹，16张PNG和16个同名TXT全部平铺存放，不再创建肖像、半身、全身、下半身四个子目录。文件名保留取景类型和序号，例如 `角色名_lower_body_03.png` 与 `角色名_lower_body_03.txt`。清单、API缓存和临时文件放在角色文件夹外的同级 `.aniforge/` 中，图片目录只包含图片和TXT。已有旧目录仍可补打标，无需移动原图。
 
@@ -56,6 +60,7 @@ python -m unittest discover -s tests
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_static_render.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_apose.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_framing.py
+& 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_lower_body.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_output.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_modal.py
 & 'D:/Program Files/Blender 5.2/blender.exe' --background --factory-startup --python-exit-code 1 --python tests/blender_captioning.py

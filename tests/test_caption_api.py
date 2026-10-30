@@ -51,6 +51,26 @@ class CaptionApiTests(unittest.TestCase):
         with self.assertRaises(api.CaptionError):
             api.parse_response({'choices': [{'finish_reason': 'length', 'message': {'content': '{}'}}]}, ['a'])
 
+    def test_each_image_has_its_own_whitelisted_camera_context(self):
+        context = api.camera_context({'group': 'lower_body', 'view': 'back', 'camera': {'azimuth': 180},
+                                      'name': 'PRIVATE_CHARACTER', 'image': 'private/path.png'})
+        self.assertEqual(context, {'framing': 'lower_body', 'view': 'back', 'azimuth_degrees': -180})
+        self.assertEqual(api.camera_context({'group': 'lower_body', 'view': 'back', 'camera': {'azimuth': 90}})['view'], 'left')
+        images = [{'id': 'a', 'png': b'png', 'context': dict(context, name='PRIVATE_CHARACTER')},
+                  {'id': 'b', 'png': b'png', 'context': {'framing': 'portrait', 'view': 'front'}}]
+        payload = api.make_payload(api.ApiConfig('https://example.com', 'vision'), images)
+        content = payload['messages'][1]['content']
+        a, b = json.loads(content[1]['text']), json.loads(content[3]['text'])
+        self.assertEqual((a['id'], b['id']), ('a', 'b'))
+        self.assertIn('lower-body', a['render_context']['framing'])
+        self.assertIn('from behind', a['render_context']['view'])
+        self.assertIn('head-detail', b['render_context']['framing'])
+        self.assertEqual(b['render_context']['view'], 'front view')
+        self.assertNotIn('PRIVATE_CHARACTER', json.dumps(payload))
+        self.assertIn('visible evidence override', payload['messages'][0]['content'])
+        self.assertGreaterEqual(api.PROMPT_VERSION, 3)
+        self.assertEqual(api.camera_context({'group': [], 'view': {}}), {})
+
     def test_prefix_and_one_utf8_sidecar_per_image(self):
         with tempfile.TemporaryDirectory() as folder:
             for name in ('front', 'back'):

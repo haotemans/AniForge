@@ -1,6 +1,7 @@
 """Main-thread thumbnails and sidecars; network-only work runs off the UI thread."""
 import hashlib
 import json
+import re
 import struct
 import zlib
 from concurrent.futures import Future
@@ -11,7 +12,7 @@ import bpy
 import numpy as np
 from bpy.props import StringProperty, IntProperty, EnumProperty
 
-from .caption_api import ApiConfig, CaptionError, BATCH_SIZE, IMAGE_SIZE, request_batch, format_caption, atomic_text
+from .caption_api import ApiConfig, CaptionError, BATCH_SIZE, IMAGE_SIZE, request_batch, format_caption, atomic_text, camera_context
 from .core import dataset_metadata_dir
 
 _JOB = None
@@ -119,13 +120,22 @@ class CaptionJob:
         self.pending = []; self.total = 0; self.done = 0; self.failed = 0
         self.future = None; self.batch = []; self.stop_after_batch = False; self.errors = {}
         self.records = {}
+        manifest = read_manifest(root)
+        contexts = {Path(shot['image']).as_posix(): camera_context(shot)
+                    for shot in manifest.get('shots', []) if isinstance(shot, dict) and isinstance(shot.get('image'), str)}
         for index, path in enumerate(image_paths(root), 1):
             rel = path.relative_to(root).as_posix()
+            context = contexts.get(rel)
+            if context is None:
+                match = re.search(r'_(portrait|half_body|full_body|lower_body)_\d+$', path.stem)
+                # Historical three-view index 03 means back, while full index
+                # 03 means right: never guess a view from an image number.
+                context = camera_context({'group': match[1]}) if match else {}
             item = {'id': f'image_{index:03}', 'path': path, 'relative': rel,
-                    'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                    'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'context': context}
             self.total += 1
             cached = self.cache['images'].get(rel, {})
-            if isinstance(cached, dict) and cached.get('sha256') == item['sha256'] and cached.get('signature') == self.signature and isinstance(cached.get('description'), str) and cached['description'].strip():
+            if isinstance(cached, dict) and cached.get('sha256') == item['sha256'] and cached.get('signature') == self.signature and cached.get('context', {}) == context and isinstance(cached.get('description'), str) and cached['description'].strip():
                 self.write_caption(item, cached['description'])
             else:
                 self.pending.append(item)
@@ -139,13 +149,14 @@ class CaptionJob:
     def prepare(self):
         self.batch = self.pending[:BATCH_SIZE]
         del self.pending[:len(self.batch)]
-        return [{'id': item['id'], 'png': thumbnail_png(item['path'])} for item in self.batch]
+        return [{'id': item['id'], 'png': thumbnail_png(item['path']), 'context': item['context']} for item in self.batch]
 
     def accept(self, descriptions):
         # Persist validated descriptions first: a later file-write failure or
         # restart can repair TXT files without paying for another API request.
         for item in self.batch:
             self.cache['images'][item['relative']] = {'sha256': item['sha256'], 'signature': self.signature,
+                                                     'context': item['context'],
                                                      'description': descriptions[item['id']]}
         _json_write(self.cache_path, self.cache)
         for item in self.batch:
@@ -310,6 +321,7 @@ def draw_config(layout, context):
         layout.prop(prefs, prop)
     layout.label(text='兼容 Chat Completions 多图接口')
     layout.label(text='每批 8 张 · 等比缩小 · 长边 ≤1024')
+    layout.label(text='逐图附带取景 / 方向 · 以画面为准')
     layout.operator('ml.save_caption_api', text='保存 API 设置', icon='FILE_TICK')
 
 

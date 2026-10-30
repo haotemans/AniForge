@@ -14,7 +14,7 @@ s.armature = next(o for o in bpy.context.scene.objects if o.type == 'ARMATURE')
 s.output = str(Path(__file__).resolve().parents[1] / 'test_output/surface_diagnostics')
 session = addon.RenderSession(bpy.context)
 session.setup(bpy.context)
-session.prepare_shot(bpy.context, dict(group='portrait', index=1, azimuth=0, expression='neutral', pose='relaxed'))
+session.prepare_shot(bpy.context, dict(group='portrait', index=1, azimuth=0, expression='neutral', pose='tpose'))
 cam = session.camera
 right = cam.matrix_world.to_quaternion() @ Vector((1, 0, 0))
 up = cam.matrix_world.to_quaternion() @ Vector((0, 1, 0))

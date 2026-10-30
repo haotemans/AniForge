@@ -1,159 +1,85 @@
 import importlib.util
-import copy
 import tempfile
 import unittest
-from types import SimpleNamespace
 from pathlib import Path
 
-spec = importlib.util.spec_from_file_location('core', Path(__file__).resolve().parents[1] / 'mmd_lora_studio' / 'core.py')
+spec = importlib.util.spec_from_file_location('core', Path(__file__).resolve().parents[1] / 'mmd_lora_studio/core.py')
 core = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(core)
 
 
 class RecipeTests(unittest.TestCase):
-    def test_halfbody05_is_the_documented_hand_on_hip_photo(self):
-        shot = next(s for s in core.recipe() if s['group'] == 'half_body' and s['index'] == 5)
-        self.assertEqual((shot['pose'], shot['expression']), ('hand_hip', 'smile'))
-        self.assertEqual((shot['azimuth'], shot['elevation']), (30, 0))
-        self.assertEqual(shot['camera']['camera_lens'], 75)
-        self.assertEqual(shot['camera']['camera_aspect'], 'PORTRAIT')
-        self.assertEqual(shot['performance']['expression_strength'], .4)
-        self.assertEqual(shot['include_hands'], ['left_wrist', 'right_wrist'])
-        self.assertEqual(len(core.recipe()), 39)
-
-    def test_three_views_are_the_default_test_budget(self):
-        shots = core.three_view_recipe()
-        self.assertEqual([s['view'] for s in shots], ['front', 'side', 'back'])
-        self.assertEqual([s['azimuth'] for s in shots], [0, 90, 180])
-        self.assertTrue(all(s['expression'] == 'neutral' for s in shots))
-        with self.assertRaises(ValueError):
-            core.three_view_recipe('unknown')
-
-    def test_balanced_unique_recipe(self):
+    def test_exactly_sixteen_four_views(self):
         shots = core.recipe()
-        self.assertEqual(len(shots), 39)
+        self.assertEqual(len(shots), 16)
+        self.assertEqual(core.GROUPS, ('portrait', 'half_body', 'full_body', 'lower_body'))
         for group in core.GROUPS:
             group_shots = [s for s in shots if s['group'] == group]
-            self.assertEqual([s['index'] for s in group_shots], list(range(1, 13)) if group == 'portrait' else list(range(1, 10)))
-            self.assertEqual(len({s['title'] for s in group_shots}), 12 if group == 'portrait' else 9)
-            self.assertTrue(all(s['pose'] in core.POSE_LABELS and s['expression'] in core.EXPRESSION_LABELS for s in group_shots))
+            self.assertEqual([s['index'] for s in group_shots], [1, 2, 3, 4])
+            self.assertEqual([s['azimuth'] for s in group_shots], [0, 90, -90, 180])
+            self.assertEqual([s['view'] for s in group_shots], ['front', 'left', 'right', 'back'])
 
-    def test_camera_and_performance_are_designed_for_each_group(self):
-        shots = core.recipe()
-        portrait = [s for s in shots if s['group'] == 'portrait']
-        outfit = [s for s in shots if s['group'] == 'outfit_detail']
-        self.assertTrue(all(s['expression'] == 'neutral' for s in portrait[:4]))
-        self.assertEqual([s['azimuth'] for s in portrait[:4]], [0, 90, -90, 180])
-        self.assertTrue(all(s['camera']['camera_aspect'] == 'SQUARE' for s in portrait))
-        self.assertTrue(all(abs(s['azimuth']) <= 45 for s in portrait[4:]))
-        self.assertEqual(len({s['focus'] for s in outfit}), 9)
-        self.assertTrue(all(s['pose'] == 'arms_clear' and s['expression'] == 'neutral' for s in outfit))
-        self.assertTrue({90, 180} <= {s['azimuth'] for s in shots if s['group'] == 'full_body'})
-        self.assertTrue(any(s['include_hands'] for s in portrait))
-        self.assertEqual(len(core.POSE_LABELS), 17)
-        self.assertTrue(core.SEATED_POSES <= {s['pose'] for s in shots if s['group'] == 'full_body'})
-        self.assertEqual(set(core.POSE_LABELS), set(core.POSE_DIRECTIONS))
-        # Every request gets its own nested controls.
-        shots[0]['camera']['camera_lens'] = 25
-        self.assertEqual(core.recipe()[0]['camera']['camera_lens'], 85)
+    def test_only_apose_and_neutral_face(self):
+        self.assertEqual({s['pose'] for s in core.recipe()}, {'apose'})
+        self.assertEqual({s['expression'] for s in core.recipe()}, {'neutral'})
+        self.assertTrue(all('pose_provider' not in s and 'performance' not in s for s in core.recipe()))
 
-    def test_current_mode_and_shot_overrides_preserve_user_controls(self):
-        settings = SimpleNamespace(pose='user pose', expression='user face', camera_lens=40, hand_pose='KEEP')
-        shots = core.current_recipe(settings)
-        self.assertEqual(len(shots), 39)
-        self.assertTrue(all(s['pose'] == settings.pose and s['expression'] == settings.expression for s in shots))
-        self.assertTrue(all('performance' not in s and 'include_hands' not in s for s in shots))
-        self.assertTrue(all(s['camera']['camera_aspect'] == 'SQUARE' for s in shots if s['group'] == 'portrait'))
-        effective = core.ShotSettings(settings, core.recipe()[0])
-        self.assertEqual(effective.camera_lens, 85)
-        self.assertEqual(settings.camera_lens, 40)
-        self.assertEqual(effective.hand_pose, 'AUTO')
-        self.assertEqual(settings.hand_pose, 'KEEP')
+    def test_ordinary_test_budget_stays_three(self):
+        for group in core.GROUPS:
+            self.assertEqual([s['azimuth'] for s in core.three_view_recipe(group)], [0, 90, 180])
+        with self.assertRaises(ValueError):
+            core.three_view_recipe('outfit_detail')
 
-    def test_39_photos_cover_character_information_without_pose_triplication(self):
-        report = core.dataset_coverage(core.recipe())
-        self.assertEqual(report['total'], 39)
-        self.assertEqual(report['per_group'], {'portrait': 12, 'half_body': 9, 'full_body': 9, 'outfit_detail': 9})
-        self.assertEqual(report['seated_photos'], 3)
-        self.assertTrue({90, 180} <= set(report['full_body_angles']))
-        self.assertIn('SHOES', report['clothing_regions'])
-        self.assertEqual(len(report['clothing_regions']), 9)
+    def test_recipe_has_no_shared_mutation(self):
+        plan = core.recipe(); plan[0]['pose'] = 'old'
+        self.assertEqual(core.recipe()[0]['pose'], 'apose')
 
-    def test_three_views_keep_the_selected_performance(self):
-        shots = core.three_view_recipe('half_body', 'custom pose', 'custom smile')
-        self.assertTrue(all(s['pose'] == 'custom pose' and s['expression'] == 'custom smile' for s in shots))
+    def test_captions_describe_the_visible_crop(self):
+        self.assertIn('lower body, legs, feet', core.caption('character', 'lower_body', 'back'))
+        self.assertIn('from behind', core.caption('character', 'portrait', 'back'))
+        self.assertNotIn('a-pose', core.caption('character', 'portrait', 'front'))
+        self.assertIn('a-pose', core.caption('character', 'full_body', 'left'))
+        self.assertTrue(core.caption('phoenix_reffaella', 'portrait', 'front').startswith('@3d, phoenix reffaella, '))
+        self.assertEqual(core.safe_name('phoenix_reffaella'), 'phoenix_reffaella')
 
-    def test_library_validation_and_legacy_migration(self):
-        value = core.validate_library({'poses': {}, 'expressions': {}})
-        self.assertEqual(value['cameras'], {})
-        self.assertEqual(core.normalized_name('ウィンク２'), core.normalized_name('ウィンク2'))
-        for invalid in [{'poses': {'broken': {'head': [[1, 2]]}}},
-                        {'expressions': {'bad': {'mesh': {'smile': float('nan')}}}},
-                        {'cameras': {'bad': {'camera_lens': 0}}},
-                        {'cameras': {'bad': {'camera_projection': 'FISHEYE'}}},
-                        {'cameras': {'bad': {'camera_roll': 'invalid'}}}]:
+    def test_coverage(self):
+        self.assertEqual(core.dataset_coverage(core.recipe())['per_group'], dict.fromkeys(core.GROUPS, 4))
+
+    def test_crop_padding_keeps_the_complete_subject(self):
+        self.assertEqual(core.padded_crop(100, 80, (30, 20, 66, 61), 3), (28, 18, 68, 63))
+        self.assertEqual(core.padded_crop(100, 80, (0, 0, 100, 80), 20), (0, 0, 100, 80))
+        self.assertEqual(core.padded_crop(100, 80, (3, 4, 20, 30), 0), (3, 4, 20, 30))
+        for bounds in ((10, 10, 10, 10), (-1, 0, 10, 20), (0, 0, 101, 80)):
             with self.assertRaises(ValueError):
-                core.validate_library(invalid)
+                core.padded_crop(100, 80, bounds)
 
-    def test_local_pose_slots_preserve_captured_gestures_and_39_photo_budget(self):
-        library = core.empty_library()
-        library['poses']['local heart'] = {}
-        library['expressions']['local smile'] = {}
-        library['shot_overrides']['portrait:8'] = {'pose': 'local heart', 'expression': 'local smile',
-            'title': 'Face heart', 'include_hands': ['left_wrist', 'right_wrist'], 'support': 'floor', 'azimuth': -35}
-        library = core.validate_library(library)
-        original = core.recipe()
-        snapshot = copy.deepcopy(original)
-        shots = core.apply_shot_overrides(original, library)
-        replaced = shots[7]
-        self.assertEqual(replaced['pose'], 'local heart')
-        self.assertEqual(replaced['azimuth'], -35)
-        self.assertEqual(replaced['performance']['head_angles'], [0, 0, 0])
-        self.assertEqual(replaced['performance']['hand_pose'], 'KEEP')
-        self.assertEqual(replaced['performance']['expression_strength'], 1)
-        self.assertEqual(replaced['include_hands'], ['left_wrist', 'right_wrist'])
-        self.assertEqual(original, snapshot)
-        self.assertEqual(core.dataset_coverage(shots)['per_group'], {'portrait': 12, 'half_body': 9, 'full_body': 9, 'outfit_detail': 9})
-        self.assertEqual(shots[30:], original[30:])
-        self.assertEqual(core.dataset_coverage(shots)['seated_photos'], 3)
-        self.assertEqual(core.validate_library({})['shot_overrides'], {})
-        self.assertEqual(core.validate_library({'shot_overrides': {'portrait:3': {'pose': 'wave'}}})['shot_overrides'].get('portrait:5'), {'pose': 'wave'})
+    def test_camera_migration_discards_all_poses_and_expressions(self):
+        old = {'poses': {'old': {}}, 'expressions': {'old': {}},
+               'cameras': {'lens': {'preview_group': 'outfit_detail', 'camera_lens': 75}}}
+        result = core.validate_camera_library(old)
+        self.assertEqual(set(result), {'schema_version', 'cameras'})
+        self.assertEqual(result['cameras']['lens']['preview_group'], 'lower_body')
+        self.assertEqual(result['cameras']['lens']['camera_lens'], 75)
+        with self.assertRaises(ValueError):
+            core.validate_camera_library({'cameras': {'bad': {'camera_lens': float('nan')}}})
 
-    def test_invalid_shot_overrides_reject_missing_and_malformed_references(self):
-        for slot, override in [('portrait:13', {'pose': 'wave'}), ('unknown:1', {'pose': 'wave'}),
-                ('portrait:1', []), ('portrait:1', {'pose': 'missing'}),
-                ('portrait:1', {'pose': []}), ('portrait:1', {'pose': 'wave', 'expression': {}}),
-                ('portrait:1', {'pose': 'wave', 'include_hands': ['head']}),
-                ('portrait:1', {'pose': 'wave', 'include_hands': [{}]}),
-                ('portrait:1', {'pose': 'wave', 'support': []}),
-                ('portrait:1', {'pose': 'wave', 'azimuth': 181}),
-                ('portrait:1', {'pose': 'wave', 'azimuth': []}),
-                ('portrait:1', {'pose': 'wave', 'arbitrary': 3})]:
-            with self.subTest(slot=slot, override=override), self.assertRaises(ValueError):
-                core.validate_library({'shot_overrides': {slot: override}})
-
-    def test_imported_pose_ik_policy_is_validated_and_backwards_compatible(self):
-        self.assertEqual(core.validate_library({})['pose_options'], {})
-        valid = {'poses': {'imported': {}}, 'pose_options': {'imported': {'leg_mode': 'KEEP'}}}
-        self.assertEqual(core.validate_library(valid)['pose_options'], valid['pose_options'])
-        for invalid in ({'missing': {'leg_mode': 'KEEP'}}, {'imported': {'leg_mode': []}},
-                        {'imported': {'leg_mode': 'AUTO'}}, {'imported': {}}):
-            with self.assertRaises(ValueError):
-                core.validate_library({'poses': {'imported': {}}, 'pose_options': invalid})
-
-    def test_caption_does_not_invent_pose(self):
-        text = core.caption('test_character', 'outfit_detail', 'neutral', '')
-        self.assertIn('clothing focus', text)
-        self.assertNotIn('wave', text)
-
-    def test_safe_path_and_atomic_manifest(self):
+    def test_safe_paths_and_manifest(self):
         self.assertNotIn('/', core.safe_name('../../test:character'))
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'manifest.json'
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'manifest.json'
             core.write_json(path, {'status': 'running'})
             core.write_json(path, {'status': 'complete'})
             self.assertIn('complete', path.read_text())
             self.assertFalse(path.with_suffix('.json.tmp').exists())
+
+    def test_training_metadata_stays_outside_image_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            dataset = Path(folder)/'my_character'
+            metadata = core.dataset_metadata_dir(dataset)
+            self.assertFalse(metadata.is_relative_to(dataset))
+            self.assertEqual(metadata.parent, Path(folder)/'.aniforge')
+            self.assertEqual(metadata, core.dataset_metadata_dir(dataset))
+            self.assertNotEqual(metadata, core.dataset_metadata_dir(Path(folder)/'another'/'my_character'))
 
 
 if __name__ == '__main__':

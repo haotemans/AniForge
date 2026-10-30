@@ -110,6 +110,108 @@ shader.inputs['Alpha'].default_value = 1
 profiled_face = addon.toon_material(regression, 'GENSHIN', settings)
 assert profiled_face['mmd_lora_role'] == 'FACE'
 assert any(n.type == 'NEW_GEOMETRY' for n in profiled_face.node_tree.nodes)
+assert not any(n.type == 'SHADERTORGB' for n in profiled_face.node_tree.nodes)
+# Mingyin's neck skin and reversed brow/lash naming need explicit profiles.
+regression.name = '肌1'
+assert material_role(regression) == 'SKIN'
+mingyin_skin = addon.toon_material(regression, 'NEVERNESS', settings)
+assert mingyin_skin['mmd_lora_soft_light']
+assert not any(n.type == 'SHADERTORGB' for n in mingyin_skin.node_tree.nodes)
+other_skin = addon.toon_material(regression, 'HSR', settings)
+assert any(n.type == 'SHADERTORGB' for n in other_skin.node_tree.nodes)
+regression.name = '前发'
+mingyin_hair = addon.toon_material(regression, 'NEVERNESS', settings)
+assert mingyin_hair['mmd_lora_soft_light']
+assert not any(n.type == 'SHADERTORGB' for n in mingyin_hair.node_tree.nodes)
+other_hair = addon.toon_material(regression, 'WUWA', settings)
+assert any(n.type == 'SHADERTORGB' for n in other_hair.node_tree.nodes)
+# Feioni's back hair must retain strand colors with no studio/cast light.
+# Exercise both hair slots, repeated-name imports, and an explicit role override.
+from mathutils import Vector
+for name in ('前发', '后发', '后发.001', 'Custom hair'):
+    regression.name = name
+    if name == 'Custom hair':
+        regression['mmd_lora_role'] = 'HAIR'
+    zzz_hair = addon.toon_material(regression, 'ZZZ', settings)
+    assert zzz_hair['mmd_lora_role'] == 'HAIR'
+    assert zzz_hair['mmd_lora_soft_light']
+    assert not any(n.type == 'SHADERTORGB' for n in zzz_hair.node_tree.nodes)
+    fill = next(n for n in zzz_hair.node_tree.nodes if n.type == 'VALTORGB')
+    assert fill.color_ramp.interpolation == 'EASE'
+    low, high = fill.color_ramp.elements
+    assert .80 <= min(low.color[:3]) <= .83
+    assert tuple(high.color) == (1, 1, 1, 1)
+    direction = next(n for n in zzz_hair.node_tree.nodes if n.type == 'VECT_MATH')
+    for normal in ((0, -1, 0), (1, 0, 0), (0, 1, 0)):
+        light = fill.color_ramp.evaluate(Vector(normal).dot(direction.inputs[1].default_value))
+        assert min(light[:3]) >= .80
+    texture = next(n for n in zzz_hair.node_tree.nodes if n.type == 'TEX_IMAGE')
+    assert texture.image == source_image
+    assert shader.inputs['Alpha'].default_value == 1
+    if 'mmd_lora_role' in regression:
+        del regression['mmd_lora_role']
+regression.name = '肌'
+zzz_skin = addon.toon_material(regression, 'ZZZ', settings)
+assert zzz_skin['mmd_lora_soft_light']
+assert not any(n.type == 'SHADERTORGB' for n in zzz_skin.node_tree.nodes)
+regression.name = 'Coat'
+zzz_coat = addon.toon_material(regression, 'ZZZ', settings)
+assert any(n.type == 'SHADERTORGB' for n in zzz_coat.node_tree.nodes)
+fill = next(n for n in zzz_coat.node_tree.nodes if n.type == 'VALTORGB')
+assert fill.color_ramp.interpolation == 'CONSTANT'
+assert min(fill.color_ramp.elements[0].color[:3]) > .63
+regression.name = '后发+'
+zzz_highlight = addon.toon_material(regression, 'ZZZ', settings)
+assert zzz_highlight['mmd_lora_role'] == 'HAIR_HIGHLIGHT'
+assert zzz_highlight.surface_render_method == 'BLENDED'
+assert not any(n.type == 'SHADERTORGB' for n in zzz_highlight.node_tree.nodes)
+alpha = next(n for n in zzz_highlight.node_tree.nodes if n.type == 'MATH')
+assert alpha.operation == 'MULTIPLY'
+assert abs(alpha.inputs[1].default_value - settings.hair_highlight_strength) < .0001
+assert alpha.inputs[0].links[0].from_socket.name == 'Alpha'
+# The native half-transparent sock layer has an additive sphere highlight.
+# Replace its graph without losing opacity, the base pattern or source data.
+regression.name = '袜+'
+shader.inputs['Alpha'].default_value = .5
+zzz_stocking = addon.toon_material(regression, 'ZZZ', settings)
+assert zzz_stocking['mmd_lora_role'] == 'STOCKING'
+assert not zzz_stocking.get('mmd_lora_preserved_layer')
+assert zzz_stocking.surface_render_method == 'BLENDED'
+assert not any(n.type in {'SHADERTORGB', 'GROUP'} for n in zzz_stocking.node_tree.nodes)
+alpha = next(n for n in zzz_stocking.node_tree.nodes if n.type == 'MATH')
+assert alpha.inputs[1].default_value == .5
+assert alpha.inputs[0].links[0].from_socket.name == 'Alpha'
+assert next(n for n in zzz_stocking.node_tree.nodes if n.type == 'TEX_IMAGE').image == source_image
+assert shader.inputs['Alpha'].default_value == .5
+assert addon.toon_material(regression, 'HSR', settings).get('mmd_lora_preserved_layer')
+shader.inputs['Alpha'].default_value = 1
+regression.name = '眉睫'
+assert material_role(regression) == 'EYE'
+mingyin_lashes = addon.toon_material(regression, 'NEVERNESS', settings)
+assert not any(n.type == 'SHADERTORGB' for n in mingyin_lashes.node_tree.nodes)
+regression.name = '顔'
+assert material_role(regression) == 'FACE'
+lily_face = addon.toon_material(regression, 'WUWA', settings)
+assert lily_face.get('mmd_lora_soft_light')
+assert not any(n.type == 'SHADERTORGB' for n in lily_face.node_tree.nodes)
+for name in ('前髪', '後髪'):
+    regression.name = name
+    assert material_role(regression) == 'HAIR'
+regression.name = '瞳'
+assert material_role(regression) == 'EYE'
+lily_eye = addon.toon_material(regression, 'WUWA', settings)
+assert not any(n.type == 'SHADERTORGB' for n in lily_eye.node_tree.nodes)
+regression.name = '身体・脚'
+assert material_role(regression) == 'MIXED_BODY'
+lily_body = addon.toon_material(regression, 'WUWA', settings)
+assert lily_body.get('mmd_lora_skin_fill')
+assert any(n.type == 'SHADERTORGB' for n in lily_body.node_tree.nodes), 'Clothing must keep its cel branch'
+assert any(n.type == 'SEPARATE_COLOR' and n.mode == 'HSV' for n in lily_body.node_tree.nodes)
+assert next(n for n in lily_body.node_tree.nodes if n.type == 'TEX_IMAGE').image == source_image
+assert not addon.toon_material(regression, 'HSR', settings).get('mmd_lora_skin_fill')
+regression.name = '上着'
+assert material_role(regression) == 'GENERIC'
+assert not addon.toon_material(regression, 'WUWA', settings).get('mmd_lora_skin_fill')
 regression.name = '目'
 profiled_eye = addon.toon_material(regression, 'WUWA', settings)
 assert profiled_eye['mmd_lora_role'] == 'EYE'
@@ -127,95 +229,10 @@ for style in addon.STYLES:
     assert bpy.ops.ml.materials() == {'FINISHED'}
     assert body.active_material.name.endswith(style)
     assert any(n.type == 'BSDF_TRANSPARENT' for n in body.active_material.node_tree.nodes)
-addon.pose_apply(settings, 'hand_hip')
-addon.pose_apply(settings, 'relaxed')
-assert (rig.pose.bones['左ひじ'].matrix.to_quaternion() @ Vector((0, 1, 0))).z < -.9
-addon.expression_apply(settings, addon.model_meshes(settings), 'blink')
-assert blink.value == 1
-assert abs(structural.value - .3) < .0001
-settings.expression = 'smile'
-blink.value = .6
-assert bpy.ops.ml.preset(action='SAVE_EXPRESSION') == {'FINISHED'}
-blink.value = 0
-addon.expression_apply(settings, addon.model_meshes(settings), 'smile')
-assert abs(blink.value - .6) < .0001
-settings.presets_json = ''
-blink.value = 0
-addon.expression_apply(settings, addon.model_meshes(settings), 'neutral')
-assert blink.value == 0
-assert abs(structural.value - .3) < .0001
 
-# Ordinary regression checks do not render. The full suite is explicit opt-in.
-if '--full-render' not in sys.argv:
-    import tempfile
-    from unittest.mock import patch
-    dispatched = []
-    original_output = settings.output
-    objects_before = len(bpy.data.objects)
-    with tempfile.TemporaryDirectory() as temporary_output:
-        settings.output = temporary_output
-        with patch.object(addon.RenderSession, 'render', lambda self, context, shot: dispatched.append(shot.copy())):
-            assert bpy.ops.ml.render_dataset() == {'FINISHED'}
-        assert [shot['azimuth'] for shot in dispatched] == [0, 90, 180]
-        assert len(bpy.data.objects) == objects_before
-        assert not settings.running
-    settings.output = original_output
-    addon.unregister()
-    print('MMD_LORA_MATERIALS_OK (no images rendered)')
-    sys.exit(0)
-
-# Preserve a non-default user state and ensure the entire batch restores it.
-rig.pose.bones['左腕'].rotation_mode = 'XYZ'
-rig.pose.bones['左腕'].rotation_euler.x = .15
-old_matrix = rig.pose.bones['左腕'].matrix_basis.copy()
-scene.render.resolution_x = 720
-scene.render.use_border = True
-scene.render.use_compositing = True
-initial_camera = scene.camera
-initial_world = scene.world
-count = len(bpy.data.objects)
-assert bpy.ops.ml.render_dataset(test_only=False) == {'FINISHED'}
-assert len(bpy.data.objects) == count
 assert len(bpy.data.meshes) == mesh_count
-assert scene.camera == initial_camera and scene.world == initial_world
-assert scene.render.resolution_x == 720 and scene.render.use_border and scene.render.use_compositing
-assert all(abs(rig.pose.bones['左腕'].matrix_basis[i][j] - old_matrix[i][j]) < .00001
-           for i in range(4) for j in range(4))
-assert abs(structural.value - .3) < .0001
-folder = sorted((ROOT / 'test_output').glob('smoke_character_*'))[-1]
-manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
-assert manifest['status'] == 'complete' and len(manifest['shots']) == 39
-assert len(list(folder.rglob('*.png'))) == 39
-assert len(list(folder.rglob('*.txt'))) == 39
-assert not settings.running
-
-# Exercise an interrupted session and a setup failure as well as successful completion.
-session = addon.RenderSession(bpy.context)
-session.setup(bpy.context)
-session.close('cancelled')
-assert len(bpy.data.objects) == count and scene.world == initial_world
-# Fail during setup after visibility was changed, then verify restoration.
-session = addon.RenderSession(bpy.context)
-def fail_camera(*args):
-    raise RuntimeError('Injected camera creation failure')
-session.create_object = fail_camera
-try:
-    session.setup(bpy.context)
-    raise AssertionError('Expected camera failure')
-except RuntimeError as exc:
-    assert 'Injected' in str(exc)
-finally:
-    session.close('failed', 'Injected test failure')
-assert len(bpy.data.objects) == count and scene.world == initial_world
-settings.preview_group = 'outfit_detail'
-assert bpy.ops.ml.preview() == {'FINISHED'}
-assert len(bpy.data.objects) == count and scene.world == initial_world
-settings.output = ''
-try:
-    bpy.ops.ml.render_dataset()
-    raise AssertionError('Expected invalid output to be rejected')
-except RuntimeError as exc:
-    assert '输出目录不能为空' in str(exc)
-assert len(bpy.data.objects) == count and not settings.running
+addon.apply_apose(settings)
+addon.neutralize_face(rig, addon.model_meshes(settings))
+assert blink.value == 0 and abs(structural.value-.3) < .0001
 addon.unregister()
-print('MMD_LORA_SMOKE_OK', folder)
+print('MMD_LORA_MATERIALS_OK: six styles, texture repair, private alpha copies; no images rendered')

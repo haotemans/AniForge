@@ -1,14 +1,66 @@
 """Automatic framing with explicit lens, aspect, orbit and composition controls."""
 import math
+import bpy
 
 from mathutils import Vector, Quaternion
 from .material_profiles import material_role
 from .core import ShotSettings
-from .performance import find_bone, finger_bones, bone_side
+from .static_pose import find_bone
 
 CAMERA_FIELDS = ('camera_projection', 'camera_lens', 'camera_azimuth', 'camera_elevation', 'camera_roll',
                  'camera_zoom', 'camera_shift_x', 'camera_shift_y', 'camera_target_offset', 'camera_aspect',
                  'portrait_focus', 'margin', 'preview_group')
+
+DATA_FIELDS = ('type', 'lens', 'sensor_fit', 'sensor_width', 'sensor_height', 'shift_x', 'shift_y',
+               'ortho_scale', 'clip_start', 'clip_end')
+
+
+def ensure_camera(scene):
+    """Reuse one owned camera across characters, previews and render sessions."""
+    camera = next((o for o in scene.objects if o.type == 'CAMERA' and o.get('aniforge_camera')), None)
+    if camera is None:
+        camera = next((o for o in scene.objects if o.type == 'CAMERA' and o.get('aniforge_preview_for')), None)
+    if camera is None:
+        camera = bpy.data.objects.new('AniForge Camera', bpy.data.cameras.new('AniForge Camera'))
+        scene.collection.objects.link(camera)
+    camera['aniforge_camera'] = True
+    return camera
+
+
+def remember_camera(camera):
+    return camera.matrix_world.copy(), camera.rotation_mode, {key: getattr(camera.data, key) for key in DATA_FIELDS}
+
+
+def restore_camera(camera, state):
+    matrix, mode, values = state
+    camera.rotation_mode = mode
+    camera.matrix_world = matrix
+    for key, value in values.items():
+        setattr(camera.data, key, value)
+
+
+def white_world(scene):
+    world = scene.world
+    if world is None or not world.get('aniforge_white'):
+        world = bpy.data.worlds.new('AniForge White Background')
+        world['aniforge_white'] = True
+    world.use_nodes = True
+    world.color = (1, 1, 1)
+    world.node_tree.nodes['Background'].inputs[0].default_value = (1, 1, 1, 1)
+    world.node_tree.nodes['Background'].inputs[1].default_value = 1
+    scene.world = world
+    return world
+
+
+def white_view(scene):
+    """A white world must also display as white, rather than an AgX mid-grey."""
+    view = scene.view_settings
+    view.view_transform = 'Standard'
+    view.look = 'None'
+    view.exposure = 0
+    view.gamma = 1
+    view.use_curve_mapping = False
+    scene.render.film_transparent = False
 
 
 def resolution(settings):
@@ -60,6 +112,62 @@ def face_bounds(meshes, depsgraph):
     return (lo, hi) if hi.z - lo.z > .00001 else None
 
 
+def bone_region_points(meshes, depsgraph, rig, keys, bottom=-math.inf, top=math.inf):
+    """Use evaluated skin weights, so hair/props do not widen a leg close-up."""
+    roots = [bone for key in keys if (bone := find_bone(rig, key)) is not None] if rig else []
+    names = {bone.name for root in roots for bone in (root, *root.children_recursive)}
+    if not names:
+        return []
+    points = []
+    for obj in meshes:
+        if obj.hide_render:
+            continue
+        indices = {group.index for group in obj.vertex_groups if group.name in names}
+        parent = obj
+        attached = False
+        while parent:
+            if parent.parent == rig and parent.parent_type == 'BONE' and parent.parent_bone in names:
+                attached = True
+                break
+            parent = parent.parent
+        if not indices and not attached:
+            continue
+        evaluated = obj.evaluated_get(depsgraph)
+        for vertex in evaluated.data.vertices:
+            if not attached and sum(g.weight for g in vertex.groups if g.group in indices) < .25:
+                continue
+            point = evaluated.matrix_world @ vertex.co
+            if bottom <= point.z <= top:
+                points.append(point)
+    return points
+
+
+def region_bounds(points):
+    return (Vector(tuple(min(p[i] for p in points) for i in range(3))),
+            Vector(tuple(max(p[i] for p in points) for i in range(3))))
+
+
+def head_region(meshes, depsgraph, rig, head, face, body_height):
+    # Long hair below the chin is intentionally outside a head-detail crop.
+    bottom = face[0].z - (face[1].z-face[0].z)*.06 if face else head.z-body_height*.025 if head is not None else None
+    if bottom is None:
+        return None
+    points = bone_region_points(meshes, depsgraph, rig, ('head',), bottom=bottom)
+    if not points:
+        # Imported meshes without usable weights can still identify face/hair.
+        for obj in meshes:
+            if obj.hide_render:
+                continue
+            slots = {i for i, slot in enumerate(obj.material_slots) if slot.material and material_role(slot.material) in
+                     {'FACE', 'EYE', 'HAIR', 'HAIR_HIGHLIGHT'}}
+            evaluated = obj.evaluated_get(depsgraph)
+            indices = {v for poly in evaluated.data.polygons if poly.material_index in slots for v in poly.vertices}
+            points.extend(p for i in indices if (p := evaluated.matrix_world @ evaluated.data.vertices[i].co).z >= bottom)
+    if face:
+        points.extend(box_points(*face))
+    return region_bounds(points) if points else None
+
+
 def configure_camera(context, settings, meshes, camera, shot):
     settings = ShotSettings(settings, shot)
     scene = context.scene
@@ -83,24 +191,27 @@ def configure_camera(context, settings, meshes, camera, shot):
     hips = joint('lower_body')
     body_height = max((head.z-lo.z) + height*.07, height*.5) if head else height
     body_center = torso if torso is not None else center
-    # Approximate anatomical zones. These locate clothing on the wearer;
-    # no claim is made that a particular model actually wears a collar/skirt.
-    regions = {'COLLAR': (.82, .22, 0), 'CHEST': (.72, .30, 0),
-               'SLEEVE_LEFT': (.68, .42, .22), 'SLEEVE_RIGHT': (.68, .42, -.22),
-               'WAIST': (.54, .28, 0), 'HIPS': (.43, .34, 0), 'HEM': (.25, .47, 0),
-               'BACK_UPPER': (.73, .39, 0), 'BACK_WAIST': (.5, .34, 0), 'SHOES': (.08, .28, 0)}
     if group == 'full_body':
         points = box_points(lo, hi)
         target = center.copy()
-    elif group == 'portrait' and (face := face_bounds(meshes, context.evaluated_depsgraph_get())):
-        face_lo, face_hi = face
-        face_height = face_hi.z - face_lo.z
-        target = (face_lo + face_hi) / 2 + Vector((0, 0, face_height * .1))
-        multiplier = 1.55 if (focus or settings.portrait_focus) == 'FACE' else 2.6
-        size = max(face_height * multiplier, (face_hi.x-face_lo.x) * 1.5 / aspect)
-        roi_lo = target - Vector((size*aspect*.5, (face_hi.y-face_lo.y)*.5, size*.5))
-        roi_hi = target + Vector((size*aspect*.5, (face_hi.y-face_lo.y)*.5, size*.5))
-        points = box_points(roi_lo, roi_hi)
+    elif group == 'portrait':
+        dg = context.evaluated_depsgraph_get()
+        face = face_bounds(meshes, dg)
+        region = head_region(meshes, dg, rig, head, face, body_height)
+        if (focus or settings.portrait_focus) == 'FACE' and face:
+            face_lo, face_hi = face
+            face_height = face_hi.z - face_lo.z
+            target = (face_lo+face_hi)/2 + Vector((0, 0, face_height*.1))
+            size = max(face_height*1.55, (face_hi.x-face_lo.x)*1.5/aspect)
+            half = Vector((size*aspect*.5, (face_hi.y-face_lo.y)*.5, size*.5))
+            points = box_points(target-half, target+half)
+        elif region:
+            points = box_points(*region)
+            target = (region[0]+region[1])*.5
+        else:
+            target = head.copy() if head is not None else Vector((center.x, center.y, lo.z+height*.87))
+            half = Vector((body_height*.12, body_height*.12, body_height*.14))
+            points = box_points(target-half, target+half)
     elif group == 'half_body' and head is not None and hips is not None:
         top = head + Vector((0, 0, body_height*.15))
         bottom = hips - Vector((0, 0, body_height*.05))
@@ -108,63 +219,45 @@ def configure_camera(context, settings, meshes, camera, shot):
         size = max(top.z-bottom.z, body_height*.35)
         half = Vector((size*aspect*.5, body_height*.18, size*.5))
         points = box_points(target-half, target+half)
-    elif group == 'outfit_detail' and focus in regions:
-        vertical, fraction, lateral = regions[focus]
-        target = Vector((body_center.x, body_center.y, lo.z + body_height*vertical)) + side * body_height*lateral
-        size = body_height*fraction
-        if hips is not None and head is not None:
-            chest = joint('upper_body2')
-            chest = chest if chest is not None else head.lerp(hips, .4)
-            anchors = {'COLLAR': head.lerp(chest, .2), 'CHEST': chest.lerp(hips, .25),
-                       'WAIST': hips.lerp(chest, .3), 'HIPS': hips-Vector((0, 0, body_height*.06)),
-                       'BACK_UPPER': chest.lerp(hips, .2), 'BACK_WAIST': hips.lerp(chest, .25)}
-            if focus in anchors:
-                target = anchors[focus].copy()
-            if focus.startswith('SLEEVE_'):
-                arm = joint('left_arm' if focus == 'SLEEVE_LEFT' else 'right_arm')
-                wrist = joint('left_wrist' if focus == 'SLEEVE_LEFT' else 'right_wrist')
-                if arm is not None and wrist is not None:
-                    target = arm.lerp(wrist, .5)
-                    size = max(size, (wrist-arm).length*1.25)
-            if focus == 'HEM':
-                knees = [p for key in ('left_knee', 'right_knee') if (p := joint(key)) is not None]
-                if knees:
-                    target = hips.lerp(sum(knees, Vector())/len(knees), .8)
-            if focus == 'SHOES':
-                ankles = [p for key in ('left_ankle', 'right_ankle') if (p := joint(key)) is not None]
-                if ankles:
-                    target = sum(ankles, Vector())/len(ankles)
-        half = Vector((size*aspect*.5, body_height*.16, size*.5))
-        points = box_points(target-half, target+half)
+    elif group == 'lower_body':
+        # Upper thighs through the complete footwear; exclude long hair, hands
+        # and skirt flare from the fit while leaving them visible in the scene.
+        thighs = [p for key in ('left_leg', 'right_leg') if (p := joint(key)) is not None]
+        top_z = max(p.z for p in thighs)+body_height*.025 if thighs else hips.z if hips is not None else lo.z+height*.53
+        top_z = min(hi.z, max(lo.z+height*.3, top_z))
+        dg = context.evaluated_depsgraph_get()
+        crop = bone_region_points(meshes, dg, rig,
+                                  ('left_leg', 'right_leg', 'left_knee', 'right_knee', 'left_ankle', 'right_ankle'), top=top_z)
+        if not crop:
+            anchor = hips if hips is not None else center
+            for obj in meshes:
+                if obj.hide_render:
+                    continue
+                evaluated = obj.evaluated_get(dg)
+                slots = {i for i, slot in enumerate(obj.material_slots) if slot.material and
+                         material_role(slot.material) in {'HAIR', 'HAIR_HIGHLIGHT'}}
+                hair = {v for poly in evaluated.data.polygons if poly.material_index in slots for v in poly.vertices}
+                crop.extend(p for v in evaluated.data.vertices if v.index not in hair and
+                            (p := evaluated.matrix_world @ v.co).z <= top_z and abs((p-anchor).dot(side)) <= body_height*.24)
+        if crop:
+            crop_lo, crop_hi = region_bounds(crop)
+            crop_hi.z = top_z
+        else:
+            anchor = hips if hips is not None else center
+            crop_lo = Vector((anchor.x-body_height*.18, anchor.y-body_height*.18, lo.z))
+            crop_hi = Vector((anchor.x+body_height*.18, anchor.y+body_height*.18, top_z))
+        points = box_points(crop_lo, crop_hi)
+        target = (crop_lo+crop_hi)*.5
     else:
-        fraction, vertical = {'portrait': (.29, .86), 'half_body': (.46, .78), 'outfit_detail': (.48, .49)}[group]
+        fraction, vertical = {'portrait': (.29, .86), 'half_body': (.46, .78)}[group]
         target = Vector((center.x, center.y, lo.z + height * vertical))
         size = height * fraction
         width = min(hi.x-lo.x, size * aspect)
         points = box_points(target-Vector((width*.5, (hi.y-lo.y)*.5, size*.5)), target+Vector((width*.5, (hi.y-lo.y)*.5, size*.5)))
-    included = []
-    for key in shot.get('include_hands', []):
-        point = joint(key)
-        if point is not None:
-            radius = body_height*.065
-            points += box_points(point-Vector((radius, radius, radius)), point+Vector((radius, radius, radius)))
-            # A raised/extended finger can lie outside a wrist-sized box.
-            # Follow the actual evaluated fingers of the requested hand.
-            side_name = key.split('_', 1)[0]
-            padding = Vector((body_height*.01,)*3)
-            for bone, _, _ in finger_bones(rig):
-                if bone_side(bone) == side_name:
-                    evaluated = evaluated_rig.pose.bones[bone.name]
-                    for local in (evaluated.head, evaluated.tail):
-                        tip = evaluated_rig.matrix_world @ local
-                        points += box_points(tip-padding, tip+padding)
-            included.append(key)
-    if included:
-        target = Vector(tuple((min(p[i] for p in points)+max(p[i] for p in points))*.5 for i in range(3)))
     x, y, z = settings.camera_target_offset
     target += height * (side*x + forward*y + Vector((0, 0, z)))
     azimuth = math.radians(settings.front + settings.camera_azimuth + shot.get('azimuth', 0))
-    elevation = math.radians(shot.get('elevation', settings.camera_elevation))
+    elevation = math.radians(settings.camera_elevation+shot.get('elevation', 0))
     direction = Vector((math.sin(azimuth)*math.cos(elevation), -math.cos(azimuth)*math.cos(elevation), math.sin(elevation)))
     rotation = (-direction).to_track_quat('-Z', 'Y') @ Quaternion(Vector((0, 0, 1)), math.radians(settings.camera_roll))
     camera.rotation_mode = 'QUATERNION'
@@ -202,5 +295,5 @@ def configure_camera(context, settings, meshes, camera, shot):
     return {'projection': data.type, 'lens': data.lens, 'target': list(target), 'location': list(camera.location),
             'ortho_scale': data.ortho_scale, 'resolution': list(resolution(settings)),
             'roi': [list(point) for point in points], 'azimuth': settings.camera_azimuth+shot.get('azimuth', 0),
-            'elevation': shot.get('elevation', settings.camera_elevation), 'focus': focus,
-            'included_hands': included}
+            'elevation': settings.camera_elevation+shot.get('elevation', 0), 'focus': focus,
+            'framing': group}

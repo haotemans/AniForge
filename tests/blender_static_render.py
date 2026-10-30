@@ -42,34 +42,52 @@ bpy.ops.rigidbody.world_add(); world = scene.rigidbody_world; world.enabled = Tr
 target = bpy.data.objects.new('Existing MMD track target', None); scene.collection.objects.link(target)
 track = rig.pose.bones['頭'].constraints.new('COPY_LOCATION'); track.name = 'mmd_tools_rigid_track'; track.target = target
 track.mute = False
+scene.camera = addon.ensure_camera(scene)
+scene.render.image_settings.color_depth = '16'
+scene.view_settings.exposure = 1.25; scene.view_settings.gamma = .9
+scene.view_settings.use_curve_mapping = True
+color_state = (scene.view_settings.exposure, scene.view_settings.gamma, scene.view_settings.use_curve_mapping)
 frame = scene.frame_current; object_count = len(bpy.data.objects)
 # Raw values left in an older .blend must never reactivate removed features.
 settings['physics_mode'] = 1; settings['physics_frames'] = 240
 settings['ui_section'] = 4; addon.migrate_settings()
-assert settings.ui_section == 'PERFORMANCE'
 assert not hasattr(settings, 'physics_mode')
-assert 'PHYSICS' not in settings.bl_rna.properties['ui_section'].enum_items.keys()
+assert 'ui_section' not in settings.bl_rna.properties
 
 with tempfile.TemporaryDirectory() as folder:
     settings.output = folder
+    fixture_plan = addon.recipe()
     with patch('subprocess.run', side_effect=AssertionError('Physics subprocess started')), \
          patch('subprocess.Popen', side_effect=AssertionError('Physics worker started')):
-        session = addon.RenderSession(bpy.context, addon.dataset_plan(settings)); session.setup(bpy.context)
+        session = addon.RenderSession(bpy.context, fixture_plan); session.setup(bpy.context)
         assert session.manifest['deformation_mode'] == 'ARMATURE_STATIC'
+        assert session.manifest['pose'] == 'apose' and session.manifest['output_layout'] == 'FLAT'
+        assert not session.metadata_folder.is_relative_to(session.folder)
+        image_names = set()
+        assert scene.view_settings.exposure == 0 and scene.view_settings.gamma == 1
+        assert not scene.view_settings.use_curve_mapping and not scene.render.film_transparent
         assert not world.enabled and track.mute
         assert all(not m.show_viewport and not m.show_render for m, _, _ in modifier_flags)
-        for shot in addon.dataset_plan(settings):
-            session.prepare_shot(bpy.context, shot)
+        for shot in fixture_plan:
+            image, _, _ = session.prepare_shot(bpy.context, shot)
+            assert image.parent == session.folder
+            assert image.name not in image_names
+            image_names.add(image.name)
             assert not world.enabled and track.mute
             assert scene.frame_current == frame
         session.close('checked_without_rendering')
+        assert len(image_names) == 16
+        assert not list(session.folder.iterdir()), 'Training folder contains metadata or subfolders'
+        assert (session.metadata_folder/'manifest.json').is_file()
         assert world.enabled and not track.mute
         assert all((m.show_viewport, m.show_render) == (v, r) for m, v, r in modifier_flags)
         assert len(bpy.data.objects) == object_count
+        assert scene.render.image_settings.color_depth == '16'
+        assert (scene.view_settings.exposure, scene.view_settings.gamma, scene.view_settings.use_curve_mapping) == color_state
         session = addon.RenderSession(bpy.context); session.setup(bpy.context)
         try:
             with patch.object(addon, 'configure_camera', side_effect=ValueError('Forced framing error')):
-                session.prepare_shot(bpy.context, addon.recipe()[0])
+                session.prepare_shot(bpy.context, fixture_plan[0])
         except ValueError:
             session.close('failed', 'Forced framing error')
         else:
@@ -81,5 +99,5 @@ with tempfile.TemporaryDirectory() as folder:
     for manifest in Path(folder).rglob('manifest.json'):
         assert 'physics_settings' not in json.loads(manifest.read_text())
 assert scene.frame_current == frame
-print('STATIC_RENDER_OK: 39 shots, legacy settings ignored, no workers/images, dynamics restored after success/error')
+print('STATIC_RENDER_OK: 16 shots, legacy settings ignored, no workers/images, dynamics restored after success/error')
 addon.unregister()

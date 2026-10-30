@@ -10,3 +10,6 @@ dist/
 .env
 .env.*
 *.log
+
+# Retired pose-reference images, kept only as local historical assets.
+docs/images/

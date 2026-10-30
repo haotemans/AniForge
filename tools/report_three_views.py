@@ -19,7 +19,7 @@ for row, (game, data) in enumerate(reports):
     title = '鸣潮 · 锁暝：眼睛' if game == 'WUWA' else '绝区零 · 菲欧妮：颈圈'
     folder = Path(data['render_folder'])
     assert data['shots'] == 3
-    images = sorted((folder / 'portrait').glob('*.png'))
+    images = sorted(folder.glob('*_portrait_*.png')) or sorted((folder / 'portrait').glob('*.png'))
     assert len(images) == 3
     ImageDraw.Draw(sheet).text((12, row * 446 + 8), title, font=font, fill='white')
     cards = []

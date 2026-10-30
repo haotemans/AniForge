@@ -30,7 +30,7 @@ def fold(layout, settings, prop, title):
 
 def status(settings):
     text = settings.progress
-    for old, new in (('complete:', '已完成 ·'), ('preview:', '预览完成 ·'),
+    for old, new in (('complete:', '图片渲染完成 ·'), ('preview:', '预览完成 ·'),
                      ('cancelled:', '已停止 ·'), ('failed:', '渲染失败 ·')):
         text = text.replace(old, new)
     for name, label in GROUP_LABELS.items():
@@ -92,7 +92,9 @@ class ML_PT_panel(bpy.types.Panel):
         elif settings.progress != '等待开始':
             self.layout.label(text=status(settings), icon='ERROR' if settings.progress.startswith('failed:') else 'INFO')
         if settings.caption_status:
-            self.layout.label(text=settings.caption_status, icon='INFO')
+            box = self.layout.box()
+            box.alert = bool(settings.caption_error and not settings.caption_running)
+            box.label(text=settings.caption_status, icon='ERROR' if box.alert else 'INFO')
         if settings.caption_error:
             self.layout.label(text=settings.caption_error, icon='ERROR')
         if settings.caption_running:

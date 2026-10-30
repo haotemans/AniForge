@@ -6,12 +6,42 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('aniforge_caption_api', Path(__file__).resolve().parents[1]/'mmd_lora_studio/caption_api.py')
 api = importlib.util.module_from_spec(spec); sys.modules[spec.name] = api; spec.loader.exec_module(api)
 
 
 class CaptionApiTests(unittest.TestCase):
+    def test_transient_and_permanent_error_classification(self):
+        config = api.ApiConfig('https://example.com/v1', 'vision', 'private-unit-key')
+        images = [{'id': 'a', 'png': b'png'}]
+        for status in (400, 401, 403, 404, 408, 429, 500, 502, 503, 504):
+            error = api.HTTPError(config.endpoint(), status, 'private-provider-body', {}, None)
+            with self.subTest(status=status), patch.object(api, 'build_opener') as opener:
+                opener.return_value.open.side_effect = error
+                with self.assertRaises(api.CaptionError) as raised:
+                    api.request_batch(config, images)
+                self.assertEqual(raised.exception.retryable, status in {408, 429} or status >= 500)
+                self.assertNotIn('private', str(raised.exception))
+        for error in (api.URLError('private-network-details'), TimeoutError(), OSError()):
+            with patch.object(api, 'build_opener') as opener:
+                opener.return_value.open.side_effect = error
+                with self.assertRaises(api.CaptionError) as raised:
+                    api.request_batch(config, images)
+                self.assertTrue(raised.exception.retryable)
+                self.assertNotIn('private', str(raised.exception))
+        for raw in (b'not JSON', b'\xff', b'{"choices":[null]}'):
+            with patch.object(api, 'build_opener') as opener:
+                opener.return_value.open.return_value.__enter__.return_value.read.return_value = raw
+                with self.assertRaises(api.CaptionError) as raised:
+                    api.request_batch(config, images)
+                self.assertTrue(raised.exception.retryable)
+        with self.assertRaises(api.CaptionError) as raised:
+            api.parse_response({'choices': [{'finish_reason': 'length', 'message': {'content': '{}'}}]}, ['a'])
+        self.assertFalse(raised.exception.retryable)
+        self.assertFalse(api.CaptionError('Configuration error.').retryable)
+
     def test_endpoint_and_secret_representation(self):
         for base, endpoint in [('https://example.com', 'https://example.com/v1/chat/completions'),
                                ('https://example.com/api/v1/', 'https://example.com/api/v1/chat/completions'),

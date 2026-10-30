@@ -10,6 +10,7 @@ import time
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from collections import Counter
 from threading import Thread
 from unittest.mock import patch
 
@@ -27,6 +28,7 @@ settings = bpy.context.scene.ml_settings
 settings.trigger = 'LOCAL_CHARACTER_A'
 assert 'api_key' not in settings.bl_rna.properties
 requests = []; invalid = [False]; view_overrides = {}
+request_ids = []; response_plans = {}
 
 
 def check_png(data, expected=(64, 32)):
@@ -71,9 +73,15 @@ class Handler(BaseHTTPRequestHandler):
         for image in images:
             check_png(base64.b64decode(image.split(',', 1)[1]))
         requests.append(len(images))
+        request_ids.extend(ids)
+        plan = response_plans.get(ids[0], [])
+        mode = plan.pop(0) if plan else ''
+        if mode in {'500', '401'}:
+            self.send_response(int(mode)); self.end_headers(); return
         rows = [{'id': key, 'caption': 'Detailed visible red and blue clothing for '+key+'.'} for key in reversed(ids)]
         if invalid[0]: rows = rows[:-1]
-        response = json.dumps({'choices': [{'message': {'content': json.dumps({'images': rows})}}]}).encode()
+        body = {'caption': 'Wrong response schema.'} if mode == 'schema' else {'images': rows}
+        response = json.dumps({'choices': [{'message': {'content': json.dumps(body)}}]}).encode()
         self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(response)
     def log_message(self, *args): pass
 
@@ -102,7 +110,7 @@ def drain():
 
 
 try:
-    with tempfile.TemporaryDirectory() as folder:
+    with tempfile.TemporaryDirectory() as folder, patch.object(captioning, 'RETRY_DELAYS', (0, 0)):
         root = Path(folder)
         source = root/'source.png'
         image = bpy.data.images.new('Caption fixture', width=64, height=32, alpha=True)
@@ -181,19 +189,44 @@ try:
         assert requests == [1]*16
         assert all(p.read_text().startswith('@3d, LOCAL CHARACTER B, ') for p in dataset.glob('*.txt'))
 
+        # Reproduce the real 13-success/3-failure run. Only missing captions
+        # need new API calls; one HTTP 500 and two bad schemas recover.
+        cache_path = dataset_metadata_dir(dataset)/'caption_cache.json'; cache = json.loads(cache_path.read_text())
+        for i, failure in ((12, 'schema'), (13, '500'), (16, 'schema')):
+            del cache['images'][f'frame_{i:02}.png']
+            (dataset/f'frame_{i:02}.txt').unlink()
+            response_plans[f'image_{i:03}'] = [failure]
+        cache_path.write_text(json.dumps(cache), encoding='utf-8')
+        previous_requests = len(requests)
+        job = captioning.start(bpy.context, dataset, config=config, blocking=True)
+        assert job.done == 16 and job.failed == 0
+        assert Counter(request_ids[previous_requests:]) == {'image_012': 2, 'image_013': 2, 'image_016': 2}
+        manifest = json.loads((dataset_metadata_dir(dataset)/'manifest.json').read_text())
+        assert manifest['dataset_status'] == 'READY' and manifest['captioning']['errors'] == {}
+        assert set(manifest['captioning']['attempts'].values()) == {2}
+        assert all(shot['caption_status'] == 'API_COMPLETE' and 'caption_error' not in shot for shot in manifest['shots'])
+        assert len(list(dataset.glob('*.txt'))) == 16
+
         cache_path = dataset_metadata_dir(dataset)/'caption_cache.json'; cache = json.loads(cache_path.read_text())
         for i in range(1, 9):
             del cache['images'][f'frame_{i:02}.png']
             (dataset/f'frame_{i:02}.txt').unlink()
         cache_path.write_text(json.dumps(cache), encoding='utf-8')
         invalid[0] = True
+        previous_requests = len(requests)
         job = captioning.start(bpy.context, dataset, config=config, blocking=True)
         assert job.done == 8 and job.failed == 8
-        assert json.loads((dataset_metadata_dir(dataset)/'manifest.json').read_text())['dataset_status'] == 'CAPTION_FAILED'
+        assert len(requests) == previous_requests+8*captioning.MAX_ATTEMPTS
+        manifest = json.loads((dataset_metadata_dir(dataset)/'manifest.json').read_text())
+        assert manifest['dataset_status'] == 'CAPTION_FAILED'
+        assert len(manifest['captioning']['errors']) == 8
+        assert set(manifest['captioning']['attempts'].values()) == {3}
+        assert '标签未齐全' in settings.caption_status and 'frame_01.png' in settings.caption_error
         assert len(list(dataset.glob('*.txt'))) == 8
         invalid[0] = False
+        previous_requests = len(requests)
         job = captioning.start(bpy.context, dataset, config=config, blocking=True)
-        assert requests == [1]*32 and job.done == 16
+        assert len(requests) == previous_requests+8 and job.done == 16
         assert hashes == {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in dataset.glob('*.png')}
         assert not list(dataset.glob('*.tmp'))
 
@@ -215,11 +248,71 @@ try:
         assert captioning.resolve_caption_folder(settings) == legacy
 
         asynchronous = root/'async'; fixture(asynchronous, source, 2)
+        response_plans['image_001'] = ['500', 'schema']
+        previous_requests = len(requests)
         captioning.start(bpy.context, asynchronous, config=config, blocking=False)
         assert settings.caption_running
         drain()
-        assert requests[-2:] == [1, 1] and len(list(asynchronous.glob('*.txt'))) == 2
+        assert request_ids[previous_requests:] == ['image_001']*3+['image_002']
+        assert len(list(asynchronous.glob('*.txt'))) == 2
         assert not settings.caption_running
+
+        # Authentication errors are not transient and must not multiply calls.
+        unauthorized = root/'unauthorized'; fixture(unauthorized, source, 1)
+        response_plans['image_001'] = ['401']
+        previous_requests = len(requests)
+        job = captioning.start(bpy.context, unauthorized, config=config, blocking=True)
+        assert job.failed == 1 and len(requests) == previous_requests+1
+        assert '401' in settings.caption_error and not list(unauthorized.glob('*.txt'))
+
+        # Cancel while waiting for a retry: the timer remains responsive, and
+        # neither a second attempt nor another image is sent after cancellation.
+        waiting = root/'waiting'; fixture(waiting, source, 2)
+        response_plans['image_001'] = ['500']
+        previous_requests = len(requests)
+        with patch.object(captioning, 'RETRY_DELAYS', (10, 20)):
+            job = captioning.start(bpy.context, waiting, config=config, blocking=False)
+            captioning.tick()
+            deadline = time.monotonic()+5
+            while not job.future.done() and time.monotonic() < deadline: time.sleep(.01)
+            assert job.future.done()
+            assert 0 < captioning.tick() <= .2
+            assert job.retry_at > time.monotonic() and '自动重试 2/3' in settings.caption_status
+            assert len(requests) == previous_requests+1
+            job.stop_after_batch = True
+            drain()
+        assert len(requests) == previous_requests+1 and job.done == 0
+        manifest = json.loads((dataset_metadata_dir(waiting)/'manifest.json').read_text())
+        assert manifest['dataset_status'] == 'CAPTION_STOPPED'
+        assert manifest['shots'][0]['caption_status'] == 'API_PENDING'
+
+        # A local disk-write error must not resend an already paid API result.
+        disk_error = root/'disk_error'; fixture(disk_error, source, 1)
+        previous_requests = len(requests)
+        original_atomic_text = captioning.atomic_text
+        def deny_txt(path, text):
+            if Path(path).suffix == '.txt': raise PermissionError('fixture')
+            return original_atomic_text(path, text)
+        with patch.object(captioning, 'atomic_text', side_effect=deny_txt):
+            job = captioning.start(bpy.context, disk_error, config=config, blocking=True)
+        assert job.failed == 1 and len(requests) == previous_requests+1
+        job = captioning.start(bpy.context, disk_error, config=config, blocking=True)
+        assert job.done == 1 and len(requests) == previous_requests+1
+
+        # Completion checks actual TXT files; a removed file cannot be READY.
+        lost_txt = root/'lost_txt'; fixture(lost_txt, source, 1)
+        job = captioning.start(bpy.context, lost_txt, config=config, blocking=False)
+        original_accept = job.accept
+        def remove_sidecar(descriptions):
+            original_accept(descriptions)
+            next(lost_txt.glob('*.txt')).unlink()
+        with patch.object(job, 'accept', side_effect=remove_sidecar): drain()
+        assert job.done == 0 and job.failed == 1
+        manifest = json.loads((dataset_metadata_dir(lost_txt)/'manifest.json').read_text())
+        assert manifest['dataset_status'] == 'CAPTION_FAILED' and 'TXT' in settings.caption_error
+        previous_requests = len(requests)
+        job = captioning.start(bpy.context, lost_txt, config=config, blocking=True)
+        assert job.done == 1 and len(requests) == previous_requests
 
         cancelled = root/'cancelled'; fixture(cancelled, source, 16)
         before_cancel = len(requests)
@@ -247,4 +340,4 @@ finally:
     captioning.shutdown(); addon.unregister()
     server.shutdown(); server.server_close(); thread.join()
 
-print('CAPTIONING_OK: 16 images = 16 single-image JSON requests, proportional memory PNGs <=1024, 1 image/1 TXT, cache/retry/async/cancel; zero renders')
+print('CAPTIONING_OK: batch1, proportional PNGs <=1024, 1 image/1 TXT, 13+3 recovery, bounded retries, auth/disk failures, async/cancel, final TXT verification; zero renders')

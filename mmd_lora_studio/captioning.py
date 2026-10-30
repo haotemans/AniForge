@@ -7,6 +7,7 @@ import zlib
 from concurrent.futures import Future
 from pathlib import Path
 from threading import Thread
+from time import monotonic, sleep
 
 import bpy
 import numpy as np
@@ -16,6 +17,8 @@ from .caption_api import ApiConfig, CaptionError, BATCH_SIZE, IMAGE_SIZE, reques
 from .core import dataset_metadata_dir, safe_name
 
 _JOB = None
+MAX_ATTEMPTS = 3
+RETRY_DELAYS = (1.0, 2.0)
 
 
 def preferences(context):
@@ -156,7 +159,7 @@ class CaptionJob:
             self.cache['images'] = {}
         self.pending = []; self.total = 0; self.done = 0; self.failed = 0
         self.future = None; self.batch = []; self.stop_after_batch = False; self.errors = {}
-        self.records = {}
+        self.records = {}; self.attempts = {}; self.retry_at = 0.0; self.items = []
         manifest = read_manifest(root)
         contexts = {Path(shot['image']).as_posix(): camera_context(shot)
                     for shot in manifest.get('shots', []) if isinstance(shot, dict) and isinstance(shot.get('image'), str)}
@@ -171,6 +174,7 @@ class CaptionJob:
             item = {'id': f'image_{index:03}', 'path': path, 'relative': rel,
                     'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'context': context}
             self.total += 1
+            self.items.append(item)
             cached = self.cache['images'].get(rel, {})
             if isinstance(cached, dict) and cached.get('sha256') == item['sha256'] and cached.get('signature') == self.signature and cached.get('context', {}) == context and isinstance(cached.get('description'), str) and cached['description'].strip():
                 self.write_caption(item, cached['description'])
@@ -182,11 +186,17 @@ class CaptionJob:
         atomic_text(item['path'].with_suffix('.txt'), caption)
         self.records[item['relative']] = {'caption': caption, 'caption_status': 'API_COMPLETE'}
         self.done += 1
+        self.scene.ml_settings.caption_error = next(iter(self.errors.values()), '')
 
     def prepare(self):
         self.batch = self.pending[:BATCH_SIZE]
         del self.pending[:len(self.batch)]
-        return [{'id': item['id'], 'png': thumbnail_png(item['path']), 'context': item['context']} for item in self.batch]
+        images = [{'id': item['id'], 'png': thumbnail_png(item['path']), 'context': item['context']} for item in self.batch]
+        for item in self.batch:
+            key = item['relative']
+            self.attempts[key] = self.attempts.get(key, 0)+1
+        self.retry_at = 0.0
+        return images
 
     def accept(self, descriptions):
         # Persist validated descriptions first: a later file-write failure or
@@ -200,14 +210,46 @@ class CaptionJob:
             self.write_caption(item, descriptions[item['id']])
         self.update_manifest()
 
-    def fail(self, message):
+    def fail(self, error):
+        message = str(error)
         self.scene.ml_settings.caption_error = message
+        retry = []
         for item in self.batch:
-            if item['relative'] not in self.records:
+            key = item['relative']
+            if self.records.get(key, {}).get('caption_status') == 'API_COMPLETE':
+                continue
+            attempt = self.attempts.get(key, 0)
+            if (isinstance(error, CaptionError) and error.retryable and
+                    0 < attempt < MAX_ATTEMPTS and not self.stop_after_batch):
+                retry.append(item)
+                self.records[key] = {'caption_status': 'API_RETRYING', 'caption_error': message}
+            else:
                 self.failed += 1
-                self.errors[item['relative']] = message
-                self.records[item['relative']] = {'caption_status': 'API_FAILED', 'caption_error': message}
+                self.errors[key] = message
+                self.records[key] = {'caption_status': 'API_FAILED', 'caption_error': message}
+        if retry:
+            self.pending[:0] = retry
+            attempt = self.attempts[retry[0]['relative']]
+            self.retry_at = monotonic()+RETRY_DELAYS[attempt-1]
+            self.scene.ml_settings.caption_status = f'API 打标：{self.done}/{self.total} · 自动重试 {attempt+1}/{MAX_ATTEMPTS}'
         self.update_manifest()
+
+    def verify_sidecars(self):
+        # Rendering completion is separate from a usable, fully paired dataset.
+        for item in self.items:
+            key = item['relative']
+            record = self.records.get(key, {})
+            if record.get('caption_status') != 'API_COMPLETE':
+                continue
+            try:
+                valid = item['path'].with_suffix('.txt').read_text(encoding='utf-8').strip() == record['caption']
+            except (OSError, UnicodeError):
+                valid = False
+            if not valid:
+                self.done -= 1; self.failed += 1
+                message = '同名 TXT 缺失或内容不完整；请补打标，成功缓存可直接恢复。'
+                self.errors[key] = message
+                self.records[key] = {'caption_status': 'API_FAILED', 'caption_error': message}
 
     def update_manifest(self):
         path = dataset_metadata_dir(self.root)/'manifest.json'
@@ -224,6 +266,7 @@ class CaptionJob:
         manifest['captioning'] = {'completed': self.done, 'failed': self.failed, 'total': self.total,
                                  'batch_size': BATCH_SIZE, 'api_image_max_edge': IMAGE_SIZE,
                                  'api_image_resize': 'proportional_no_padding_no_upscale',
+                                 'max_attempts': MAX_ATTEMPTS, 'attempts': self.attempts,
                                  'errors': self.errors}
         manifest['dataset_status'] = ('READY' if self.done == self.total else
                                       'CAPTION_STOPPED' if self.stop_after_batch else
@@ -246,14 +289,18 @@ def _finish(job):
     global _JOB
     settings = job.scene.ml_settings
     try:
+        job.verify_sidecars()
+        for record in job.records.values():
+            if record.get('caption_status') == 'API_RETRYING':
+                record['caption_status'] = 'API_PENDING'
         job.update_manifest()
         if job.stop_after_batch:
             settings.caption_status = f'打标已停止：完成 {job.done}/{job.total}'
         elif job.failed:
-            settings.caption_status = f'API 打标：完成 {job.done}，失败 {job.failed}，可重试'
+            settings.caption_status = f'标签未齐全：{job.done}/{job.total} · {job.failed} 张失败，请补打标'
         else:
             settings.caption_status = f'API 打标完成：{job.done}/{job.total}'
-        settings.caption_error = next(iter(job.errors.values()), '')
+        settings.caption_error = next((f'{name}：{message}' for name, message in job.errors.items()), '')
     finally:
         settings.caption_running = False
         _JOB = None
@@ -271,16 +318,20 @@ def tick():
             try:
                 job.accept(job.future.result())
             except Exception as exc:
-                job.fail(str(exc) if isinstance(exc, CaptionError) else '打标结果保存失败，请检查输出目录后重试。')
+                job.fail(exc if isinstance(exc, CaptionError) else '打标结果保存失败，请检查输出目录后重试。')
             job.future = None
         if job.stop_after_batch or not job.pending:
             _finish(job); return None
+        remaining = job.retry_at-monotonic()
+        if remaining > 0:
+            return min(.2, remaining)
         try:
             images = job.prepare()
         except Exception:
             job.fail('图片压缩失败，请检查本批图片是否可读取。')
             return .1
-        settings.caption_status = f'API 打标：{job.done}/{job.total} · 本批 {len(images)} 张'
+        attempt = job.attempts[job.batch[0]['relative']]
+        settings.caption_status = f'API 打标：{job.done}/{job.total} · 请求 {attempt}/{MAX_ATTEMPTS}'
         job.future = Future()
         Thread(target=_worker, args=(job.future, job.config, images), daemon=True).start()
         return .2
@@ -308,11 +359,14 @@ def start(context, root, config=None, blocking=None):
     if blocking:
         try:
             while job.pending and not job.stop_after_batch:
+                delay = job.retry_at-monotonic()
+                if delay > 0:
+                    sleep(delay)
                 try:
                     images = job.prepare()
                     job.accept(request_batch(config, images))
                 except Exception as exc:
-                    job.fail(str(exc) if isinstance(exc, CaptionError) else '图片读取或打标结果保存失败，请检查输出目录。')
+                    job.fail(exc if isinstance(exc, CaptionError) else '图片读取或打标结果保存失败，请检查输出目录。')
         finally:
             _finish(job)
     else:

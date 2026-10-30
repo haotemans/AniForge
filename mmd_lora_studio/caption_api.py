@@ -83,7 +83,9 @@ captions, omit images, guess identities, or transfer details from one image to a
 
 
 class CaptionError(ValueError):
-    pass
+    def __init__(self, message, *, retryable=False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def camera_context(shot):
@@ -184,26 +186,26 @@ def parse_response(value, expected_ids):
             value = json.loads(text)
         rows = value['images']
         if not isinstance(rows, list):
-            raise CaptionError('API 的 images 必须是列表。')
+            raise CaptionError('API 的 images 必须是列表。', retryable=True)
         result = {}
         for row in rows:
             key = row['id']
             description = row['caption'] if 'caption' in row else row['description']
             if not isinstance(key, str) or key not in expected_ids or key in result:
-                raise CaptionError('API 返回了重复或不匹配的图片 ID，未写入本批标签。')
+                raise CaptionError('API 返回了重复或不匹配的图片 ID，未写入本批标签。', retryable=True)
             if not isinstance(description, str) or not description.strip() or len(description) > 16000:
-                raise CaptionError('API 返回了空描述或无效描述，未写入本批标签。')
+                raise CaptionError('API 返回了空描述或无效描述，未写入本批标签。', retryable=True)
             description = ' '.join(description.split())
             if description.casefold().startswith('@3d'):
-                raise CaptionError('API 应仅返回图片描述，固定前缀由插件添加。')
+                raise CaptionError('API 应仅返回图片描述，固定前缀由插件添加。', retryable=True)
             result[key] = description
         if set(result) != set(expected_ids):
-            raise CaptionError('API 未返回本批全部图片，未写入本批标签。')
+            raise CaptionError('API 未返回本批全部图片，未写入本批标签。', retryable=True)
         return result
     except CaptionError:
         raise
-    except (KeyError, IndexError, TypeError, ValueError):
-        raise CaptionError('API 返回内容不符合 images/id/caption JSON 格式。') from None
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+        raise CaptionError('API 返回内容不符合 images/id/caption JSON 格式。', retryable=True) from None
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -225,11 +227,12 @@ def request_batch(config, images):
             raise CaptionError('API 返回内容超过 2 MiB。')
         return parse_response(json.loads(raw.decode('utf-8-sig')), [i['id'] for i in images])
     except HTTPError as exc:
-        raise CaptionError(f'打标接口返回 HTTP {exc.code}，请检查地址、模型、额度与 Key。') from None
+        raise CaptionError(f'打标接口返回 HTTP {exc.code}，请检查地址、模型、额度与 Key。',
+                           retryable=exc.code in {408, 429} or 500 <= exc.code <= 599) from None
     except (URLError, TimeoutError, OSError):
-        raise CaptionError('打标接口连接失败或超时；图片保留，可重试未完成的标签。') from None
+        raise CaptionError('打标接口连接失败或超时；图片保留，可重试未完成的标签。', retryable=True) from None
     except (UnicodeError, json.JSONDecodeError):
-        raise CaptionError('API 返回的不是有效 JSON。') from None
+        raise CaptionError('API 返回的不是有效 JSON。', retryable=True) from None
 
 
 def format_caption(character, description):

@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 6),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 7),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 A-pose views',
     'category': 'Render',
@@ -798,7 +798,8 @@ class ML_OT_render(bpy.types.Operator):
                     folder = str(self._session.folder)
                     if not self.finish(context, 'complete'):
                         return {'CANCELLED'}
-                    self.report({'INFO'}, '完成：' + folder)
+                    message = '图片渲染已保存，API 打标进行中：' if context.scene.ml_settings.caption_running else '图片渲染已保存：'
+                    self.report({'INFO'}, message + folder)
                     return {'FINISHED'}
                 if context.area:
                     context.area.tag_redraw()

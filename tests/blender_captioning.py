@@ -11,6 +11,7 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -124,6 +125,43 @@ try:
             check_png(captioning.thumbnail_png(path), expected)
             assert hashlib.sha256(path.read_bytes()).hexdigest() == original_hash
         assert len(bpy.data.images) == image_count
+        # Manual captioning follows the output currently selected in the UI,
+        # selecting one latest matching character rather than a stale session.
+        output = root/'render_output'; output.mkdir()
+        old = output/'LOCAL_CHARACTER_A_20261029_120000_000001'
+        latest = output/'LOCAL_CHARACTER_A_20261030_120000_000002'
+        unrelated = output/'OTHER_CHARACTER_20261031_120000_000003'
+        for folder in (old, latest, unrelated): fixture(folder, source, 1)
+        (output/'LOCAL_CHARACTER_A_20261101_120000_000004').mkdir()  # Empty interrupted run.
+        settings.output = str(output); settings.caption_folder = ''
+        settings.last_render_folder = str(unrelated)
+        assert captioning.resolve_caption_folder(settings) == latest
+        with patch.object(captioning, 'start') as start:
+            assert bpy.ops.ml.caption_images() == {'FINISHED'}
+            assert start.call_count == 1 and start.call_args.args[1] == latest
+        settings.output = str(old)
+        assert captioning.resolve_caption_folder(settings) == old
+        other_output = root/'other_output'; other_output.mkdir()
+        other_latest = other_output/'LOCAL_CHARACTER_A_20261028_120000_000001'
+        fixture(other_latest, source, 1)
+        settings.output = str(other_output)
+        assert captioning.resolve_caption_folder(settings) == other_latest
+        settings.last_render_folder = str(other_latest)
+        settings.trigger = 'Renamed caption prefix'
+        assert captioning.resolve_caption_folder(settings) == other_latest
+        settings.trigger = 'LOCAL_CHARACTER_A'
+        settings.caption_folder = str(latest)
+        assert captioning.resolve_caption_folder(settings) == latest
+        settings.caption_folder = ''
+        empty_output = root/'only_other_character'; empty_output.mkdir()
+        fixture(empty_output/'OTHER_CHARACTER_20261031_120000_000003', source, 1)
+        settings.output = str(empty_output)
+        try:
+            captioning.resolve_caption_folder(settings)
+        except captioning.CaptionError:
+            pass
+        else:
+            raise AssertionError('A different character was selected implicitly')
         dataset = root/'dataset'; fixture(dataset, source, 16)
         hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in dataset.glob('*.png')}
         job = captioning.start(bpy.context, dataset, config=config, blocking=True)
@@ -174,6 +212,8 @@ try:
         assert old_image.with_suffix('.txt').read_text().startswith('@3d, LOCAL_CHARACTER_B, ')
         assert json.loads((dataset_metadata_dir(legacy)/'manifest.json').read_text())['dataset_status'] == 'READY'
         assert hashlib.sha256(old_image.read_bytes()).hexdigest() == hashlib.sha256(source.read_bytes()).hexdigest()
+        settings.output = str(legacy)
+        assert captioning.resolve_caption_folder(settings) == legacy
 
         asynchronous = root/'async'; fixture(asynchronous, source, 2)
         captioning.start(bpy.context, asynchronous, config=config, blocking=False)

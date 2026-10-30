@@ -13,7 +13,7 @@ import numpy as np
 from bpy.props import StringProperty, IntProperty, EnumProperty
 
 from .caption_api import ApiConfig, CaptionError, BATCH_SIZE, IMAGE_SIZE, request_batch, format_caption, atomic_text, camera_context
-from .core import dataset_metadata_dir
+from .core import dataset_metadata_dir, safe_name
 
 _JOB = None
 
@@ -103,6 +103,43 @@ def image_paths(root):
     if len(set(paths)) != len(paths) or any(not p.is_relative_to(root) or not p.is_file() for p in paths):
         raise CaptionError('图片清单包含重复、丢失或目录以外的文件。')
     return paths
+
+
+def resolve_caption_folder(settings):
+    """Follow the current output, selecting one current-character dataset."""
+    value = settings.caption_folder.strip() or settings.output.strip()
+    if not value:
+        raise CaptionError('请先填写输出目录，或另选补打标目录。')
+    root = Path(bpy.path.abspath(value)).resolve()
+    if not root.is_dir():
+        raise CaptionError('输出目录不存在，请先渲染图片或另选已有图片目录。')
+
+    def has_images(folder):
+        return bool(read_manifest(folder).get('shots')) or any(
+            p.is_file() and p.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp'} for p in folder.iterdir())
+
+    if has_images(root):
+        image_paths(root)  # Validate the selected dataset before starting a job.
+        return root
+    pattern = re.compile(re.escape(safe_name(settings.trigger)) + r'_\d{8}_\d{6}_\d{6}')
+    candidates = sorted((p for p in root.iterdir() if p.is_dir() and pattern.fullmatch(p.name)),
+                        key=lambda p: p.name, reverse=True)
+    for folder in candidates:
+        if has_images(folder):
+            image_paths(folder)
+            return folder.resolve()
+    # Renaming the caption prefix must still work for a private one-character
+    # output directory. A previous session outside this output is never used.
+    last = Path(bpy.path.abspath(settings.last_render_folder)).resolve() if settings.last_render_folder.strip() else None
+    generated = re.compile(r'(.+)_\d{8}_\d{6}_\d{6}')
+    if last is not None and last.parent == root and (match := generated.fullmatch(last.name)):
+        folders = [(p, m[1]) for p in root.iterdir() if p.is_dir() and (m := generated.fullmatch(p.name))]
+        if {name for _, name in folders} == {match[1]}:
+            for folder, _ in sorted(folders, key=lambda item: item[0].name, reverse=True):
+                if has_images(folder):
+                    image_paths(folder)
+                    return folder.resolve()
+    raise CaptionError('输出目录中未找到当前角色的图片；可另选单次渲染目录。')
 
 
 class CaptionJob:
@@ -348,10 +385,7 @@ class ML_OT_caption_images(bpy.types.Operator):
     def execute(self, context):
         try:
             settings = context.scene.ml_settings
-            value = settings.caption_folder or settings.last_render_folder
-            if not value:
-                raise CaptionError('请先选择需要打标的单次输出目录。')
-            start(context, bpy.path.abspath(value))
+            start(context, resolve_caption_folder(settings))
             return {'FINISHED'}
         except Exception as exc:
             self.report({'ERROR'}, str(exc)); return {'CANCELLED'}

@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 3),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 4),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 A-pose views',
     'category': 'Render',
@@ -246,7 +246,8 @@ class MLSettings(bpy.types.PropertyGroup):
     caption_running: BoolProperty(default=False, options={'SKIP_SAVE'})
     caption_status: StringProperty(default='', options={'SKIP_SAVE'})
     caption_error: StringProperty(default='', options={'SKIP_SAVE'})
-    caption_folder: StringProperty(name='已有图片目录', subtype='DIR_PATH', default='')
+    caption_folder: StringProperty(name='另选补标目录', subtype='DIR_PATH', default='',
+                                   description='留空跟随上方输出目录，自动选择当前角色最新的渲染图片；也可指定已有图片目录')
     last_render_folder: StringProperty(default='', subtype='DIR_PATH')
     resolution: IntProperty(name='分辨率', default=4096, min=256, max=4096, update=resolution_changed)
     preview_group: EnumProperty(name='取景范围', items=[(v, label, '') for v, label in GROUP_LABELS.items()], update=schedule_preview)

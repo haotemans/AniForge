@@ -15,12 +15,14 @@ class CaptionApiTests(unittest.TestCase):
     def test_endpoint_and_secret_representation(self):
         for base, endpoint in [('https://example.com', 'https://example.com/v1/chat/completions'),
                                ('https://example.com/api/v1/', 'https://example.com/api/v1/chat/completions'),
-                               ('https://example.com/v1/chat/completions', 'https://example.com/v1/chat/completions')]:
+                               ('https://example.com/v1/chat/completions', 'https://example.com/v1/chat/completions'),
+                               ('http://example.com:3000/v1', 'http://example.com:3000/v1/chat/completions'),
+                               ('http://192.0.2.1:3000', 'http://192.0.2.1:3000/v1/chat/completions')]:
             config = api.ApiConfig(base, 'vision', 'private-unit-key')
             self.assertEqual(config.endpoint(), endpoint)
             self.assertNotIn('private-unit-key', repr(config))
             self.assertEqual(config.fingerprint(), api.ApiConfig(base, 'vision', 'rotated-unit-key').fingerprint())
-        for base in ('file:///tmp/image', 'https://key:secret@example.com', 'https://example.com?api_key=secret', 'http://example.com'):
+        for base in ('file:///tmp/image', 'https://key:secret@example.com', 'https://example.com?api_key=secret'):
             with self.assertRaises(api.CaptionError):
                 api.ApiConfig(base, 'vision', 'private-unit-key').endpoint()
 

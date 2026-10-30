@@ -214,7 +214,9 @@ class ML_PT_output(bpy.types.Panel):
             tags.label(text='@3d, 角色名, 图片详细描述')
             captioning.draw_config(tags, context)
             tags.separator()
-            tags.prop(settings, 'caption_folder', text='补打标目录')
+            tags.prop(settings, 'caption_folder', text='另选目录（可选）')
+            if not settings.caption_folder.strip():
+                tags.label(text='默认跟随上方输出目录')
             tags.operator('ml.caption_images', text='打标已有图片 / 重试失败项', icon='FILE_REFRESH')
         developer = fold(col, settings, 'ui_developer', '开发检查')
         if developer is not None:

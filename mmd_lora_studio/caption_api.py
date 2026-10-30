@@ -1,7 +1,6 @@
 """JSON vision batches and local captions. No Blender or third-party dependencies."""
 import base64
 import hashlib
-import ipaddress
 import json
 import math
 from dataclasses import dataclass, field
@@ -131,13 +130,6 @@ class ApiConfig:
         url = urlsplit(self.base_url.strip())
         if url.scheme not in {'https', 'http'} or not url.hostname or url.username or url.password or url.query or url.fragment:
             raise CaptionError('请填写有效的 Base URL，不要在地址中填写 Key。')
-        if url.scheme == 'http' and self.api_key:
-            try:
-                local = ipaddress.ip_address(url.hostname).is_loopback
-            except ValueError:
-                local = url.hostname == 'localhost'
-            if not local:
-                raise CaptionError('带 Key 的远程接口请使用 HTTPS。')
         if not self.model.strip():
             raise CaptionError('请填写支持多图输入的视觉模型名称。')
         if any(char in self.api_key.strip() for char in ('\r', '\n', '\t')):

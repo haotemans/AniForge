@@ -19,7 +19,7 @@ TXT内容示例仅说明格式，实际描述来自配置的视觉模型：
 
 在“渲染与输出”填写角色名，开启“渲染后API打标”，展开“API图片打标”：
 
-- **Base URL**、**API Key**、**视觉模型**由用户填写。接口需兼容多图Chat Completions和JSON对象输出。
+- **Base URL**、**API Key**、**视觉模型**由用户填写。接口需兼容Chat Completions图像输入和JSON对象输出。
 - Base URL支持HTTP和HTTPS，例如`https://your-provider.example/v1`或`http://your-provider.example:3000/v1`；也可填写完整的`/chat/completions`地址。允许HTTP地址携带用户填写的Key；不自动跟随重定向，不把Key转发到其他地址。没有内置付费账户或默认供应商。
 - Key以密码框显示，仅保存在本机Blender偏好设置，不写入角色工程、清单、缓存或源码。“保存API设置”不会请求模型。
 - 默认使用用户提供的视觉依据优先的英文系统提示词；细节充分时约140–240词，稀疏画面可更短。逐张独立观察主体、动作互动、服装饰物、环境及画面表现，使用连贯段落；不补写遮挡部位、故事、性格、关系、确切年龄、图外事件或身份。可按偏好设置覆盖为中文，仍遵循相同画面核对规则。手动“基础附加标签”字段及旧值已移除，不向接口发送人工附加描述。
@@ -30,15 +30,14 @@ TXT内容示例仅说明格式，实际描述来自配置的视觉模型：
 
 原始4K图片保持不变。插件仅在内存中按原比例缩小，最长边不超过1024，不拉伸、不补方图，不放大小图，再压缩为PNG/Base64；不生成额外缩略图文件。例如4096×2048变为1024×512，2048×4096变为512×1024。
 
-单个请求最多8张，16张完整输出分成8＋8两批；单张预览或不足8张的末批按实际数量发送。JSON请求包含`model`、`messages`、`response_format: {"type":"json_object"}`和`max_tokens: 4096`，图片位于用户消息的`image_url`数据URI中，逐张附带不含角色名和文件路径的ID。
+固定batch=1，每个请求只发送一张图片，顺序处理；16张待打标图片分成16次请求，成功缓存继续复用，不因批量大小改变而重新请求成功结果。JSON请求包含`model`、`messages`、`response_format: {"type":"json_object"}`和`max_tokens: 4096`，图片位于用户消息的`image_url`数据URI中，附带不含角色名和文件路径的ID，响应的`images`数组只返回该图片的一项。
 
 模型返回的描述内容须为：
 
 ```json
 {
   "images": [
-    {"id": "image_001", "caption": "Only a detailed description of this image."},
-    {"id": "image_002", "caption": "Only a detailed description of the second image."}
+    {"id": "image_001", "caption": "Only a detailed description of this image."}
   ]
 }
 ```

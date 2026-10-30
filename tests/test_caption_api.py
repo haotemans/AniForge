@@ -60,16 +60,15 @@ class CaptionApiTests(unittest.TestCase):
         self.assertEqual(api.camera_context({'group': 'lower_body', 'view': 'back', 'camera': {'azimuth': 90}})['view'], 'left')
         images = [{'id': 'a', 'png': b'png', 'context': dict(context, name='PRIVATE_CHARACTER')},
                   {'id': 'b', 'png': b'png', 'context': {'framing': 'portrait', 'view': 'front'}}]
-        payload = api.make_payload(api.ApiConfig('https://example.com', 'vision'), images)
-        content = payload['messages'][1]['content']
-        a, b = json.loads(content[1]['text']), json.loads(content[3]['text'])
+        payloads = [api.make_payload(api.ApiConfig('https://example.com', 'vision'), [item]) for item in images]
+        a, b = [json.loads(payload['messages'][1]['content'][1]['text']) for payload in payloads]
         self.assertEqual((a['id'], b['id']), ('a', 'b'))
         self.assertIn('lower-body', a['render_context']['framing'])
         self.assertIn('from behind', a['render_context']['view'])
         self.assertIn('head-detail', b['render_context']['framing'])
         self.assertEqual(b['render_context']['view'], 'front view')
-        self.assertNotIn('PRIVATE_CHARACTER', json.dumps(payload))
-        self.assertIn('visible evidence override', payload['messages'][0]['content'])
+        self.assertNotIn('PRIVATE_CHARACTER', json.dumps(payloads))
+        self.assertIn('visible evidence override', payloads[0]['messages'][0]['content'])
         self.assertGreaterEqual(api.PROMPT_VERSION, 3)
         self.assertEqual(api.camera_context({'group': [], 'view': {}}), {})
 
@@ -84,7 +83,7 @@ class CaptionApiTests(unittest.TestCase):
             self.assertEqual(len(list(Path(folder).glob('*.txt'))), 2)
             self.assertFalse(list(Path(folder).glob('*.tmp')))
 
-    def test_http_request_is_json_with_eight_images(self):
+    def test_http_request_is_json_with_exactly_one_image(self):
         requests = []
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
@@ -99,14 +98,15 @@ class CaptionApiTests(unittest.TestCase):
         thread = Thread(target=server.serve_forever, daemon=True); thread.start()
         try:
             config = api.ApiConfig(f'http://127.0.0.1:{server.server_port}/v1', 'vision', 'unit-test-key')
-            items = [{'id': f'image_{i:03}', 'png': b'png-bytes'} for i in range(8)]
+            items = [{'id': 'image_001', 'png': b'png-bytes'}]
             result = api.request_batch(config, items)
             self.assertEqual(set(result), {i['id'] for i in items})
             path, headers, payload = requests[0]
             self.assertEqual(path, '/v1/chat/completions')
             self.assertEqual(headers['Content-Type'], 'application/json')
             self.assertEqual(headers['Authorization'], 'Bearer unit-test-key')
-            self.assertEqual(len([c for c in payload['messages'][1]['content'] if c['type'] == 'image_url']), 8)
+            self.assertEqual(api.BATCH_SIZE, 1)
+            self.assertEqual(len([c for c in payload['messages'][1]['content'] if c['type'] == 'image_url']), 1)
             self.assertEqual(payload['response_format'], {'type': 'json_object'})
             with self.assertRaises(api.CaptionError):
                 api.make_payload(config, items+[{'id': 'extra', 'png': b'x'}])

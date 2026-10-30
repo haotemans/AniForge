@@ -356,8 +356,8 @@ def draw_config(layout, context):
         layout.label(text='启用插件后可配置 API。', icon='INFO'); return
     for prop in ('base_url', 'vision_model', 'api_key', 'caption_language', 'api_timeout'):
         layout.prop(prefs, prop)
-    layout.label(text='兼容 Chat Completions 多图接口')
-    layout.label(text='每批 8 张 · 等比缩小 · 长边 ≤1024')
+    layout.label(text='兼容 Chat Completions 视觉接口')
+    layout.label(text=f'每批 {BATCH_SIZE} 张 · 等比缩小 · 长边 ≤1024')
     layout.label(text='逐图附带取景 / 方向 · 以画面为准')
     layout.operator('ml.save_caption_api', text='保存 API 设置', icon='FILE_TICK')
 

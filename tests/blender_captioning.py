@@ -1,4 +1,4 @@
-"""Local mock API, proportional memory thumbnails, 8+8 batches and TXT; no renders."""
+"""Local mock API, proportional memory thumbnails, single-image requests; no renders."""
 import base64
 import hashlib
 import json
@@ -26,7 +26,7 @@ addon.register()
 settings = bpy.context.scene.ml_settings
 settings.trigger = 'LOCAL_CHARACTER_A'
 assert 'api_key' not in settings.bl_rna.properties
-requests = []; invalid = [False]
+requests = []; invalid = [False]; view_overrides = {}
 
 
 def check_png(data, expected=(64, 32)):
@@ -59,16 +59,15 @@ class Handler(BaseHTTPRequestHandler):
         ids = json.loads(content[0]['text'])['image_ids']
         metadata = {item['id']: item for part in content[1:] if part['type'] == 'text'
                     for item in [json.loads(part['text'])]}
-        if len(ids) == 8:
-            for key in ids:
-                index = int(key.rsplit('_', 1)[1])-1
-                expected_group = tuple(FRAMING_HINTS)[index//4]
-                expected_view = ('front', 'left', 'right', 'back')[index%4]
-                hint = metadata[key]['render_context']
-                assert hint['framing'] == FRAMING_HINTS[expected_group]
-                assert hint['view'] == VIEW_HINTS[expected_view]
+        for key in ids:
+            index = int(key.rsplit('_', 1)[1])-1
+            expected_group = tuple(FRAMING_HINTS)[index//4]
+            expected_view = view_overrides.get(key, ('front', 'left', 'right', 'back')[index%4])
+            hint = metadata[key]['render_context']
+            assert hint['framing'] == FRAMING_HINTS[expected_group]
+            assert hint['view'] == VIEW_HINTS[expected_view]
         images = [part['image_url']['url'] for part in content if part['type'] == 'image_url']
-        assert len(ids) == len(images) and len(images) <= 8
+        assert len(ids) == len(images) == 1
         for image in images:
             check_png(base64.b64decode(image.split(',', 1)[1]))
         requests.append(len(images))
@@ -165,7 +164,7 @@ try:
         dataset = root/'dataset'; fixture(dataset, source, 16)
         hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in dataset.glob('*.png')}
         job = captioning.start(bpy.context, dataset, config=config, blocking=True)
-        assert requests == [8, 8] and job.done == 16 and job.failed == 0
+        assert requests == [1]*16 and job.done == 16 and job.failed == 0
         assert json.loads((dataset_metadata_dir(dataset)/'manifest.json').read_text())['dataset_status'] == 'READY'
         assert all(p.is_file() and p.suffix in {'.png', '.txt'} for p in dataset.iterdir())
         assert len(list(dataset.glob('*.txt'))) == 16
@@ -179,7 +178,7 @@ try:
         # Renaming the local trigger rewrites prefixes without any API calls.
         settings.trigger = 'LOCAL_CHARACTER_B'
         captioning.start(bpy.context, dataset, config=config, blocking=True)
-        assert requests == [8, 8]
+        assert requests == [1]*16
         assert all(p.read_text().startswith('@3d, LOCAL_CHARACTER_B, ') for p in dataset.glob('*.txt'))
 
         cache_path = dataset_metadata_dir(dataset)/'caption_cache.json'; cache = json.loads(cache_path.read_text())
@@ -194,7 +193,7 @@ try:
         assert len(list(dataset.glob('*.txt'))) == 8
         invalid[0] = False
         job = captioning.start(bpy.context, dataset, config=config, blocking=True)
-        assert requests == [8, 8, 8, 8] and job.done == 16
+        assert requests == [1]*32 and job.done == 16
         assert hashes == {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in dataset.glob('*.png')}
         assert not list(dataset.glob('*.tmp'))
 
@@ -219,15 +218,16 @@ try:
         captioning.start(bpy.context, asynchronous, config=config, blocking=False)
         assert settings.caption_running
         drain()
-        assert requests[-1] == 2 and len(list(asynchronous.glob('*.txt'))) == 2
+        assert requests[-2:] == [1, 1] and len(list(asynchronous.glob('*.txt'))) == 2
         assert not settings.caption_running
 
         cancelled = root/'cancelled'; fixture(cancelled, source, 16)
+        before_cancel = len(requests)
         job = captioning.start(bpy.context, cancelled, config=config, blocking=False)
         captioning.tick(); job.stop_after_batch = True
         drain()
-        assert job.done == 8 and len(list(cancelled.glob('*.txt'))) == 8
-        assert len(requests) == 6 and requests[-1] == 8
+        assert job.done == 1 and len(list(cancelled.glob('*.txt'))) == 1
+        assert len(requests) == before_cancel+1 and requests[-1] == 1
         assert '停止' in settings.caption_status
         assert len(bpy.data.images) == image_count
 
@@ -235,6 +235,7 @@ try:
         metadata = dataset_metadata_dir(dataset)/'manifest.json'
         manifest = json.loads(metadata.read_text())
         manifest['shots'][0]['view'] = 'back'
+        view_overrides['image_001'] = 'back'
         metadata.write_text(json.dumps(manifest), encoding='utf8')
         previous_requests = len(requests)
         job = captioning.start(bpy.context, dataset, config=config, blocking=True)
@@ -246,4 +247,4 @@ finally:
     captioning.shutdown(); addon.unregister()
     server.shutdown(); server.server_close(); thread.join()
 
-print('CAPTIONING_OK: proportional memory PNGs <=1024, no padding/upscale, 8+8 JSON, 1 image/1 TXT, cache/retry/async/cancel; zero renders')
+print('CAPTIONING_OK: 16 images = 16 single-image JSON requests, proportional memory PNGs <=1024, 1 image/1 TXT, cache/retry/async/cancel; zero renders')

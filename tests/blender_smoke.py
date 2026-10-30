@@ -189,6 +189,29 @@ regression.name = '眉睫'
 assert material_role(regression) == 'EYE'
 mingyin_lashes = addon.toon_material(regression, 'NEVERNESS', settings)
 assert not any(n.type == 'SHADERTORGB' for n in mingyin_lashes.node_tree.nodes)
+regression.name = '顔'
+assert material_role(regression) == 'FACE'
+lily_face = addon.toon_material(regression, 'WUWA', settings)
+assert lily_face.get('mmd_lora_soft_light')
+assert not any(n.type == 'SHADERTORGB' for n in lily_face.node_tree.nodes)
+for name in ('前髪', '後髪'):
+    regression.name = name
+    assert material_role(regression) == 'HAIR'
+regression.name = '瞳'
+assert material_role(regression) == 'EYE'
+lily_eye = addon.toon_material(regression, 'WUWA', settings)
+assert not any(n.type == 'SHADERTORGB' for n in lily_eye.node_tree.nodes)
+regression.name = '身体・脚'
+assert material_role(regression) == 'MIXED_BODY'
+lily_body = addon.toon_material(regression, 'WUWA', settings)
+assert lily_body.get('mmd_lora_skin_fill')
+assert any(n.type == 'SHADERTORGB' for n in lily_body.node_tree.nodes), 'Clothing must keep its cel branch'
+assert any(n.type == 'SEPARATE_COLOR' and n.mode == 'HSV' for n in lily_body.node_tree.nodes)
+assert next(n for n in lily_body.node_tree.nodes if n.type == 'TEX_IMAGE').image == source_image
+assert not addon.toon_material(regression, 'HSR', settings).get('mmd_lora_skin_fill')
+regression.name = '上着'
+assert material_role(regression) == 'GENERIC'
+assert not addon.toon_material(regression, 'WUWA', settings).get('mmd_lora_skin_fill')
 regression.name = '目'
 profiled_eye = addon.toon_material(regression, 'WUWA', settings)
 assert profiled_eye['mmd_lora_role'] == 'EYE'

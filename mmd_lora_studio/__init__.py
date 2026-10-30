@@ -1,5 +1,5 @@
 bl_info = {
-    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 2),
+    'name': 'AniForge - MMD LoRA Studio', 'author': 'AniForge', 'version': (0, 12, 3),
     'blender': (4, 2, 0), 'location': 'View3D > Sidebar > MMD LoRA',
     'description': 'MMD toon materials and 16 A-pose views',
     'category': 'Render',
@@ -17,7 +17,7 @@ from bpy_extras.io_utils import ImportHelper, ExportHelper
 from mathutils import Vector
 
 from .core import STYLES, GROUPS, GROUP_LABELS, BONES, recipe, three_view_recipe, dataset_coverage, caption, safe_name, write_json, validate_camera_library, dataset_metadata_dir
-from .material_profiles import material_role, alpha_image, face_light, hair_color
+from .material_profiles import material_role, alpha_image, face_light, hair_color, mixed_body_light
 from .static_pose import find_bone, shape_blocks, apply_apose, neutralize_face, CharacterState, has_animation, lower_body_arm_mask
 from .camera import configure_camera, capture_camera, camera_apply, resolution, ensure_camera, remember_camera, restore_camera, white_world, white_view
 from .output import save_white_crop, show_output
@@ -164,6 +164,10 @@ def toon_material(source, style, settings=None):
         alpha.inputs[1].default_value = opacity
         tree.links.new(tex.outputs['Alpha'], alpha.inputs[0])
         tree.links.new(alpha.outputs[0], mix.inputs[0])
+        if role == 'MIXED_BODY' and style == 'WUWA':
+            cel_light = multiply.inputs[2].links[0].from_socket
+            tree.links.new(mixed_body_light(tree, tex.outputs['Color'], cel_light, settings), multiply.inputs[2])
+            mat['mmd_lora_skin_fill'] = True
     if hasattr(mat, 'surface_render_method'):
         # Locking every game's eye shells to BLENDED can reorder the iris and
         # sclera (notably ZZZ). The sampled WW eye stack needs this path.

@@ -5,7 +5,7 @@ import re
 import bpy
 from mathutils import Vector
 
-ROLES = {'GENERIC', 'FACE', 'SKIN', 'FACE_SHADOW', 'HAIR', 'HAIR_HIGHLIGHT', 'EYE', 'DECAL', 'STOCKING'}
+ROLES = {'GENERIC', 'FACE', 'SKIN', 'FACE_SHADOW', 'HAIR', 'HAIR_HIGHLIGHT', 'EYE', 'DECAL', 'STOCKING', 'MIXED_BODY'}
 
 
 def material_role(source):
@@ -17,20 +17,22 @@ def material_role(source):
     name = re.sub(r'\.\d{3}$', '', source.name).casefold()
     if name in {'发影', '髮影', '目影', 'hair_shadow', 'eye_shadow'}:
         return 'FACE_SHADOW'
-    if name in {'面', '面2', '颜', '顏', 'face', 'skin_face'}:
+    if name in {'面', '面2', '颜', '顏', '顔', 'face', 'skin_face'}:
         return 'FACE'
+    if name in {'身体・脚', '身体·脚', 'mixed_body'}:
+        return 'MIXED_BODY'
     if re.fullmatch(r'(?:肌|体肌|skin|skin_body|body_skin)\d*', name):
         return 'SKIN'
     if name in {'袜', '袜+', '襪', '襪+', '丝袜', '絲襪', 'stocking', 'stockings', 'pantyhose', 'tights'}:
         return 'STOCKING'
     if name in {'目', '白目', '白2', '目白', '目hl', '目光', '目光2', '目+hi', '目++hi',
-                '睫毛', '睫', '眉', '睫眉', '眉睫', 'eyes', 'iris'}:
+                '睫毛', '睫', '眉', '睫眉', '眉睫', '瞳', 'eyes', 'iris'}:
         return 'EYE'
     if name in {'体肌+', '体下肌+', 'emo1', 'emo43', 'emo目', 'heng', 'cheek', 'skin_overlay', 'collar_decal'}:
         return 'DECAL'
     if name in {'前发+', '后发+', '前髮+', '後髮+', 'mi_bangs+', 'head+', 'hair_highlight'}:
         return 'HAIR_HIGHLIGHT'
-    if name in {'发', '髮', '前发', '后发', '前髮', '後髮', '變色髮', '马尾', '双马尾',
+    if name in {'发', '髮', '髪', '前发', '后发', '前髮', '後髮', '前髪', '後髪', '變色髮', '马尾', '双马尾',
                 'mi_bangs', 'head', 'hair', 'bangs'}:
         return 'HAIR'
     return 'GENERIC'
@@ -96,3 +98,49 @@ def hair_color(tree, color):
     tree.links.new(lift.outputs[0], rim.inputs[1])
     tree.links.new(power.outputs[0], rim.inputs[0])
     return rim.outputs[0]
+
+
+def mixed_body_light(tree, albedo, cel_light, settings):
+    """Fill skin-colored regions of Lily's shared skin/lace/boot atlas.
+
+    The mask is limited to this explicit role. Cool cloth, dark corset panels
+    and saturated metal retain cel lighting. No source pixels or UVs change.
+    """
+    separate = tree.nodes.new('ShaderNodeSeparateColor'); separate.mode = 'HSV'
+    separate.label = 'Mixed body: skin-colored atlas regions'; separate.location = (-510, -900)
+    tree.links.new(albedo, separate.inputs[0])
+
+    def math_node(operation, a, value=None, b=None):
+        node = tree.nodes.new('ShaderNodeMath'); node.operation = operation
+        tree.links.new(a, node.inputs[0])
+        if b is not None:
+            tree.links.new(b, node.inputs[1])
+        else:
+            node.inputs[1].default_value = value
+        return node.outputs[0]
+
+    red_orange = math_node('LESS_THAN', separate.outputs[0], value=.11)
+    pink = math_node('GREATER_THAN', separate.outputs[0], value=.94)
+    hue = math_node('MAXIMUM', red_orange, b=pink)
+    value = tree.nodes.new('ShaderNodeValToRGB'); value.label = 'Skin: exclude dark fabric'
+    value.color_ramp.interpolation = 'EASE'
+    value.color_ramp.elements[0].position = .18
+    value.color_ramp.elements[0].color = (0, 0, 0, 1)
+    value.color_ramp.elements[1].position = .30
+    value.color_ramp.elements[1].color = (1, 1, 1, 1)
+    tree.links.new(separate.outputs[2], value.inputs[0])
+    saturation = tree.nodes.new('ShaderNodeValToRGB'); saturation.label = 'Skin: exclude saturated metal'
+    saturation.color_ramp.interpolation = 'EASE'
+    saturation.color_ramp.elements[0].position = .60
+    saturation.color_ramp.elements[0].color = (1, 1, 1, 1)
+    saturation.color_ramp.elements[1].position = .78
+    saturation.color_ramp.elements[1].color = (0, 0, 0, 1)
+    tree.links.new(separate.outputs[1], saturation.inputs[0])
+    mask = math_node('MULTIPLY', hue, b=value.outputs[0])
+    mask = math_node('MULTIPLY', mask, b=saturation.outputs[0])
+    mix = tree.nodes.new('ShaderNodeMixRGB'); mix.blend_type = 'MIX'
+    mix.label = 'Mixed body: soft skin, retain clothing light'; mix.location = (-40, -520)
+    tree.links.new(mask, mix.inputs[0])
+    tree.links.new(cel_light, mix.inputs[1])
+    tree.links.new(face_light(tree, settings, minimum=.90, role='Body skin'), mix.inputs[2])
+    return mix.outputs[0]
